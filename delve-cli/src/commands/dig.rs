@@ -73,6 +73,10 @@ pub async fn dig_vendors(
         anyhow::bail!("no vendors enabled — check Cargo features and [vendors].enabled in config");
     }
 
+    // A failed vendor doesn't stop the others, but it does fail the command
+    // once they've all run, so a scheduler (cron, systemd) sees a non-zero
+    // exit status instead of a failure that only shows up in the logs.
+    let mut failed = Vec::new();
     for vendor_id in vendor_ids {
         let Some(plugin) = registry.get(vendor_id) else {
             anyhow::bail!("unknown vendor: {vendor_id}");
@@ -104,9 +108,14 @@ pub async fn dig_vendors(
         tracing::info!(vendor = vendor_id, "starting dig");
         if let Err(e) = delve_core::engine::dig_vendor(plugin, &ctx, store, bus).await {
             tracing::error!(vendor = vendor_id, error = %e, "dig failed");
+            failed.push(vendor_id);
         }
     }
 
+    if !failed.is_empty() {
+        failed.sort_unstable();
+        anyhow::bail!("dig failed for: {}", failed.join(", "));
+    }
     Ok(())
 }
 
@@ -305,5 +314,24 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("unknown vendor: nope"), "{err}");
+    }
+    #[tokio::test]
+    async fn a_failed_vendor_fails_the_dig_but_other_vendors_still_run() {
+        let store = memory_store().await;
+        let mut broken = MockPlugin::new("acme", vec![]);
+        broken.fail_discover = Some("portal is down");
+        let registry = registry(vec![
+            broken,
+            MockPlugin::new("globex", vec![release("sprocket", "1.0", &[1, 0], 2)]),
+        ]);
+        let sub = RecordingSubscriber::default();
+
+        let err = dig(&registry, &store, &sub, None, false)
+            .await
+            .expect_err("a vendor failing must fail the dig, so cron/systemd can see it");
+        assert_eq!(err.to_string(), "dig failed for: acme");
+
+        assert_eq!(store.all_current("globex").await.unwrap().len(), 1);
+        assert!(!store.has_completed_baseline("acme").await.unwrap());
     }
 }
