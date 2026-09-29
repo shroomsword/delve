@@ -789,7 +789,8 @@ but each has its own version quirks and should be checked the same way
 
 `discover()` makes **one** request: the API ignores `offset`, so there is no
 real pagination, and a single request with a large `limit` returns all
-~3,400 release records (about 3 MB). It caches the full records in memory,
+~3,400 release records (about 3 MB, or about 530 KB on the wire, since
+responses are gzip-compressed). It caches the full records in memory,
 and `metadata()` answers from that cache instead of requesting each record
 — otherwise a dig would take about an hour at the default one request per
 second. A response that fills the whole `limit` is treated as possibly
@@ -830,9 +831,8 @@ the plugin's use changes.
   channels, and a decision on identity: some versions appear in both
   channels with identical files, and `select_records` currently keeps just
   the newest record per model and version.
-- **Request efficiency and performance.** One ~3 MB request per dig is fine
-  today, but is worth revisiting:
-  - Enabling `reqwest`'s `gzip` feature would cut the transfer to ~530 KB.
+- **Request efficiency and performance.** One request per dig (~530 KB
+  gzip-compressed, ~3 MB decoded) is fine today, but is worth revisiting:
   - Per-model requests (`filter=eq~~platform~~<code>`) would let a dig
     cover only chosen models, at one request per model.
   - `/api/firmware-latest` returns only the newest version per model (~200

@@ -420,6 +420,64 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn http_client_requests_and_decodes_gzip() {
+        use std::io::{BufRead, BufReader, Write};
+
+        // gzip of b"delve gzip ok" (mtime 0), so no compression crate is
+        // needed just for this test.
+        const BODY: [u8; 33] = [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 75, 73, 205, 41, 75, 85, 72, 175, 202, 44, 80, 200,
+            207, 6, 0, 251, 218, 41, 36, 13, 0, 0, 0,
+        ];
+
+        // A one-shot HTTP server on a plain thread, which hands back the
+        // request's Accept-Encoding header.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut accept_encoding = None;
+            for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("accept-encoding") {
+                        accept_encoding = Some(value.trim().to_string());
+                    }
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            )
+            .unwrap();
+            stream.write_all(&BODY).unwrap();
+            accept_encoding
+        });
+
+        let ctx = ctx_with(Credentials::new());
+        let body = ctx
+            .http_client()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        let accept_encoding = server.join().unwrap().unwrap_or_default();
+        assert!(
+            accept_encoding.contains("gzip"),
+            "client must ask for gzip (reqwest's `gzip` feature); sent {accept_encoding:?}"
+        );
+        assert_eq!(body, "delve gzip ok");
+    }
+
     #[test]
     fn resolve_rate_limit_falls_back_to_default_when_no_override_exists() {
         let default = RateLimit {
