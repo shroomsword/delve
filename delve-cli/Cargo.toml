@@ -1,0 +1,34 @@
+[package]
+name = "delve-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "delve"
+path = "src/main.rs"
+
+[dependencies]
+delve-core.workspace = true
+delve-store-sqlite = { path = "../delve-store-sqlite" }
+subscriber-log = { path = "../delve-subscribers/subscriber-log" }
+subscriber-webhook = { path = "../delve-subscribers/subscriber-webhook", optional = true }
+vendor-cisco = { path = "../delve-vendors/vendor-cisco", optional = true }
+
+tokio.workspace = true
+clap.workspace = true
+toml.workspace = true
+dirs.workspace = true
+serde.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
+sha2.workspace = true
+
+[features]
+default = []
+vendor-cisco = ["dep:vendor-cisco"]
+subscriber-webhook = ["dep:subscriber-webhook"]
+all-vendors = ["vendor-cisco"]

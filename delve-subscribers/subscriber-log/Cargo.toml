@@ -1,0 +1,10 @@
+[package]
+name = "subscriber-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+delve-core.workspace = true
+async-trait.workspace = true
+tracing.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "vendor-cisco"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+delve-core.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+inventory.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+url.workspace = true
+thiserror.workspace = true
