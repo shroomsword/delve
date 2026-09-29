@@ -11,6 +11,8 @@ use cli::{Cli, Command};
 // and `dig --vendor <id>` reports "unknown vendor".
 #[cfg(feature = "vendor-cisco")]
 use vendor_cisco as _;
+#[cfg(feature = "vendor-unifi")]
+use vendor_unifi as _;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -1,0 +1,20 @@
+[package]
+name = "vendor-unifi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+delve-core.workspace = true
+async-trait.workspace = true
+inventory.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+sha2.workspace = true

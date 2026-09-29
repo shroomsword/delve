@@ -1,0 +1,264 @@
+{
+  "_embedded": {
+    "firmware": [
+      {
+        "channel": "release",
+        "created": "2026-02-11T20:10:34Z",
+        "file_size": 8004245,
+        "id": "5464c424-a775-4715-8bbc-d84602f55445",
+        "md5": "c8d246413057085b4dc2a8e0c8d368d4",
+        "sha256_checksum": "3cf8ebe793f74f5ce4aa81131f03f4a4fa9d1b0b0ed915c9ddfa9fac9297474e",
+        "platform": "U7PG2",
+        "product": "unifi-firmware",
+        "updated": "2026-02-11T20:10:37Z",
+        "version": "v6.8.2+15592",
+        "version_major": 6,
+        "version_minor": 8,
+        "version_patch": 2,
+        "version_build": "15592",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/5464c424-a775-4715-8bbc-d84602f55445"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/5464c424-a775-4715-8bbc-d84602f55445/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/5464c424-a775-4715-8bbc-d84602f55445/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/259f-U7PG2-6.8.2-5464c424-a775-4715-8bbc-d84602f55445.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2025-12-01T14:12:49Z",
+        "file_size": 8007424,
+        "id": "fadc2ced-4123-4203-9dba-d79d1872cd2d",
+        "md5": "7b25231c97126c6a0f907e2cb37e733a",
+        "sha256_checksum": "a46940377324e9069093c9f5cb9769787b02024e649f27e03220363f0cececd6",
+        "platform": "U7PG2",
+        "product": "unifi-firmware",
+        "updated": "2025-12-01T14:12:50Z",
+        "version": "v6.7.35+15586",
+        "version_major": 6,
+        "version_minor": 7,
+        "version_patch": 35,
+        "version_build": "15586",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/fadc2ced-4123-4203-9dba-d79d1872cd2d"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/fadc2ced-4123-4203-9dba-d79d1872cd2d/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/fadc2ced-4123-4203-9dba-d79d1872cd2d/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/ae36-U7PG2-6.7.35-fadc2ced-4123-4203-9dba-d79d1872cd2d.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2021-05-19T12:13:07Z",
+        "file_size": 483403360,
+        "id": "497a807b-27ef-489f-9e44-a3358a5eb83d",
+        "md5": "9efee21e0a8b5109e2c80f9efda572bd",
+        "sha256_checksum": "7a44968260c23555d72cdcb1c73c90608ce30cd6f91b977851c50f82f640436f",
+        "platform": "UCKG2",
+        "product": "unifi-firmware",
+        "updated": "2021-05-19T12:14:18Z",
+        "tags": {
+          "ubnt_version": "UCKG2.apq8053.v2.1.11.a7986ca.210510.2052"
+        },
+        "version": "v2.1.11+a7986ca",
+        "version_major": 2,
+        "version_minor": 1,
+        "version_patch": 11,
+        "version_build": "a7986ca",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/497a807b-27ef-489f-9e44-a3358a5eb83d"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/497a807b-27ef-489f-9e44-a3358a5eb83d/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/497a807b-27ef-489f-9e44-a3358a5eb83d/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/716e-UCKG2-2.1.11-497a807b27ef489f9e44a3358a5eb83d.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2021-12-20T09:12:10Z",
+        "file_size": 239008209,
+        "id": "148ba64c-6718-4f84-9ec3-44cc9115855c",
+        "md5": "73df617c7a10da72ef880baa3a4f2b7b",
+        "sha256_checksum": "f7693d3643b28d7ec355326958dc4a9a2102baead14fdab4d23f50fad9a9768c",
+        "platform": "UXGPRO",
+        "product": "unifi-firmware",
+        "updated": "2021-12-20T09:14:25Z",
+        "tags": {
+          "ubnt_version": "UXG.alpinev2.v1.11.0-23.8903922.211217.0130"
+        },
+        "version": "v1.11.0-23+3923",
+        "version_major": 1,
+        "version_minor": 11,
+        "version_patch": 0,
+        "version_prerelease": "23",
+        "version_build": "3923",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/148ba64c-6718-4f84-9ec3-44cc9115855c"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/148ba64c-6718-4f84-9ec3-44cc9115855c/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/148ba64c-6718-4f84-9ec3-44cc9115855c/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/f12c-UXGPRO-1.11.0-23-148ba64c67184f849ec344cc9115855c.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2020-02-14T17:02:07Z",
+        "file_size": 502064,
+        "id": "a4fb8871-1951-43bb-9db3-5d8a62e26e3d",
+        "md5": "a37cbb345d7299a7e8acc7ea1ad27e26",
+        "sha256_checksum": "0af65245ffccc1daf964ce92a63de40f152d42d7d63e50994607e4bb5bcc43ee",
+        "platform": "USMINI",
+        "product": "unifi-firmware",
+        "updated": "2020-02-14T17:02:09Z",
+        "tags": {
+          "ubnt_version": "US.m487.v1.6.3.574.191231.1331"
+        },
+        "version": "v1.6.3+574",
+        "version_major": 1,
+        "version_minor": 6,
+        "version_patch": 3,
+        "version_build": "574",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/a96e-USMINI-1.6.3-a4fb8871195143bb9db35d8a62e26e3d.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2026-06-03T16:03:03Z",
+        "file_size": 929896710,
+        "id": "873cfdfe-4308-4564-a54d-984de935d520",
+        "md5": "1477dcfc78d49c25f616068d579c0e25",
+        "sha256_checksum": "b2997573a232606dcea09f53aad1cde1379a964783d2357f86277483a29e8a2a",
+        "platform": "UX",
+        "product": "unifi-firmware",
+        "updated": "2026-06-03T16:21:20Z",
+        "tags": {
+          "ubnt_version": "UEX.ipq5018.v4.0.15.bc4546f.260527.2020"
+        },
+        "version": "v4.0.15+17067",
+        "version_major": 4,
+        "version_minor": 0,
+        "version_patch": 15,
+        "version_build": "17067",
+        "probability": 0.1,
+        "probability_computed": 1,
+        "release_date": "2026-06-07T16:00:00Z",
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/873cfdfe-4308-4564-a54d-984de935d520"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/873cfdfe-4308-4564-a54d-984de935d520/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/873cfdfe-4308-4564-a54d-984de935d520/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/ee34-UX-4.0.15-873cfdfe-4308-4564-a54d-984de935d520.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2019-06-06T17:26:42Z",
+        "id": "2c88f87b-d795-4936-8f33-71673f50eb14",
+        "platform": "stat",
+        "product": "unifi-firmware",
+        "updated": "2019-06-06T17:26:42Z",
+        "version": "v0.0.1",
+        "version_major": 0,
+        "version_minor": 0,
+        "version_patch": 1,
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/2c88f87b-d795-4936-8f33-71673f50eb14"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/2c88f87b-d795-4936-8f33-71673f50eb14/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/2c88f87b-d795-4936-8f33-71673f50eb14/changelog"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "_links": {
+    "self": {
+      "href": "https://fw-update.ui.com/api/firmware"
+    }
+  }
+}

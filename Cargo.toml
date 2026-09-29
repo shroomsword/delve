@@ -5,6 +5,7 @@ members = [
     "delve-cli",
     "delve-store-sqlite",
     "delve-vendors/vendor-cisco",
+    "delve-vendors/vendor-unifi",
     "delve-subscribers/subscriber-log",
     "delve-subscribers/subscriber-webhook",
 ]
