@@ -7,25 +7,22 @@ changed shows up. Vendor support is pluggable — the core engine has no
 built-in knowledge of any specific vendor's portal, API, or firmware
 format.
 
-**Status: scaffold, not a verified build.** Every module compiles
-conceptually and has real test coverage. `vendor-cisco`'s `discover`/
-`metadata` are implemented against Cisco's Software Suggestion API — real
-control flow (OAuth2 auth, rate limiting, error handling), but the exact
-API endpoints and response shapes are **unverified**, since this was
-written with no network access to check them against Cisco's live API.
-`fetch` (actual binary download) remains unimplemented — see the
-"Plugin architecture" and vendor-cisco's own module docs for exactly
-what's confirmed-safe vs. best-effort. Nothing here has been built against
-real crates.io dependencies in this environment either. Treat this as a
-first draft to verify and correct against Cisco's actual API, not a
-working integration yet.
+**Status: early development.** The workspace builds against real
+crates.io dependencies, and CI runs `rustfmt`, `clippy`, the test suite,
+and debug and release builds on every push, with all features enabled
+and the lockfile enforced (`--locked`).
 
-`vendor-unifi` is the first vendor checked against a live source: its
-`discover`, `metadata` and `fetch` all work against Ubiquiti's firmware
-update API, confirmed by live tests and an end-to-end CLI run. It covers
-UniFi network-device firmware only — see [Vendor: UniFi](#vendor-unifi).
-It's also the only vendor with `tos_reviewed: true`, so it's the only one
-`dig` currently runs.
+- **`vendor-unifi` works end to end.** Its `discover`, `metadata` and
+  `fetch` work against Ubiquiti's firmware update API, confirmed by live
+  tests and an end-to-end CLI run. It covers UniFi network-device
+  firmware only — see [Vendor: UniFi](#vendor-unifi). It's the only vendor
+  with `tos_reviewed: true`, so it's the only one `dig` currently runs.
+- **`vendor-cisco` is unverified.** Its `discover`/`metadata` are
+  implemented against Cisco's Software Suggestion API with real control
+  flow (OAuth2 auth, rate limiting, error handling), but the endpoints and
+  response shapes were written without network access and haven't been
+  checked against Cisco's live API. `fetch` (binary download) is not
+  implemented. Treat it as a first draft — see [Known gaps](#known-gaps).
 
 ## Contents
 
