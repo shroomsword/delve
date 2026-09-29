@@ -88,6 +88,7 @@ pub async fn run(
         &rate_limit_overrides,
         &vendor_id,
         credentials,
+        config.vendors.settings_for(&vendor_id),
         &http_config,
     )?;
 
