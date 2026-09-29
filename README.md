@@ -110,6 +110,18 @@ vendor-cisco = ["dep:vendor-cisco"]
 all-vendors = ["vendor-cisco"]
 ```
 
+Each vendor crate also needs a feature-gated `use` in `delve-cli/src/main.rs`:
+
+```rust
+#[cfg(feature = "vendor-cisco")]
+use vendor_cisco as _;
+```
+
+Nothing else in the CLI names a vendor crate, and rustc doesn't link a
+dependency that's never referenced — without this line the crate's
+`inventory::submit!` never runs, the plugin silently never registers, and
+`dig --vendor <id>` reports "unknown vendor".
+
 `PluginRegistry::discover()` walks every registered `PluginDescriptor` at
 startup and instantiates each one — this picks up exactly the vendors
 compiled in via Cargo features; there's no separate enable/disable step

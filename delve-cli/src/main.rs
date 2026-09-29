@@ -5,6 +5,13 @@ mod config;
 use clap::Parser;
 use cli::{Cli, Command};
 
+// Vendor crates register themselves with `inventory::submit!`, but nothing
+// else in the CLI names them, and rustc doesn't link a dependency that's
+// never referenced — so without these the plugins silently never register
+// and `dig --vendor <id>` reports "unknown vendor".
+#[cfg(feature = "vendor-cisco")]
+use vendor_cisco as _;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
