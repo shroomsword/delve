@@ -1,0 +1,38 @@
+{
+    "channel": "release",
+    "created": "2020-02-14T17:02:07Z",
+    "file_size": 502064,
+    "id": "a4fb8871-1951-43bb-9db3-5d8a62e26e3d",
+    "md5": "a37cbb345d7299a7e8acc7ea1ad27e26",
+    "sha256_checksum": "0af65245ffccc1daf964ce92a63de40f152d42d7d63e50994607e4bb5bcc43ee",
+    "platform": "USMINI",
+    "product": "unifi-firmware",
+    "updated": "2020-02-14T17:02:09Z",
+    "tags": {
+        "ubnt_version": "US.m487.v1.6.3.574.191231.1331"
+    },
+    "version": "v1.6.3+574",
+    "version_major": 1,
+    "version_minor": 6,
+    "version_patch": 3,
+    "version_build": "574",
+    "probability_computed": 0,
+    "_links": {
+        "self": {
+            "href": "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d"
+        },
+        "upload": [
+            {
+                "name": "data",
+                "href": "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d/data"
+            },
+            {
+                "name": "changelog",
+                "href": "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d/changelog"
+            }
+        ],
+        "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-firmware/a96e-USMINI-1.6.3-a4fb8871195143bb9db35d8a62e26e3d.bin"
+        }
+    }
+}

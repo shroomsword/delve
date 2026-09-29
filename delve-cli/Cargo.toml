@@ -14,6 +14,7 @@ delve-store-sqlite = { path = "../delve-store-sqlite" }
 subscriber-log = { path = "../delve-subscribers/subscriber-log" }
 subscriber-webhook = { path = "../delve-subscribers/subscriber-webhook", optional = true }
 vendor-cisco = { path = "../delve-vendors/vendor-cisco", optional = true }
+vendor-unifi = { path = "../delve-vendors/vendor-unifi", optional = true }
 
 tokio.workspace = true
 clap.workspace = true
@@ -30,5 +31,6 @@ sha2.workspace = true
 [features]
 default = []
 vendor-cisco = ["dep:vendor-cisco"]
+vendor-unifi = ["dep:vendor-unifi"]
 subscriber-webhook = ["dep:subscriber-webhook"]
-all-vendors = ["vendor-cisco"]
+all-vendors = ["vendor-cisco", "vendor-unifi"]

@@ -20,6 +20,13 @@ real crates.io dependencies in this environment either. Treat this as a
 first draft to verify and correct against Cisco's actual API, not a
 working integration yet.
 
+`vendor-unifi` is the first vendor checked against a live source: its
+`discover`, `metadata` and `fetch` all work against Ubiquiti's firmware
+update API, confirmed by live tests and an end-to-end CLI run. It covers
+UniFi network-device firmware only — see [Vendor: UniFi](#vendor-unifi).
+It's also the only vendor with `tos_reviewed: true`, so it's the only one
+`dig` currently runs.
+
 ## Contents
 
 - [Goals and non-goals](#goals-and-non-goals)
@@ -36,6 +43,7 @@ working integration yet.
 - [CLI commands](#cli-commands)
 - [Configuration reference](#configuration-reference)
 - [Compliance: ToS and robots.txt](#compliance-tos-and-robotstxt)
+- [Vendor: UniFi](#vendor-unifi)
 - [Naming](#naming)
 - [Known gaps](#known-gaps)
 - [Test coverage](#test-coverage)
@@ -71,6 +79,7 @@ delve-cli/              binary: config loading, plugin registry, commands
 delve-store-sqlite/     MetadataStore impl against SQLite (schema in migrations/)
 delve-vendors/
   vendor-cisco/          discover/metadata implemented but unverified — see below
+  vendor-unifi/          UniFi network-device firmware, verified against the live API
 delve-subscribers/
   subscriber-log/        always-on audit-trail subscriber
   subscriber-webhook/     POSTs events to a configured URL, feature-gated
@@ -86,6 +95,8 @@ Build the CLI with a vendor and the webhook subscriber:
 ```
 cargo build --features "vendor-cisco,subscriber-webhook" -p delve-cli
 ```
+
+`--features all-vendors` enables every vendor crate.
 
 ## Plugin architecture
 
@@ -107,8 +118,22 @@ inventory::submit! {
 [features]
 default = []
 vendor-cisco = ["dep:vendor-cisco"]
-all-vendors = ["vendor-cisco"]
+vendor-unifi = ["dep:vendor-unifi"]
+all-vendors = ["vendor-cisco", "vendor-unifi"]
 ```
+
+Each vendor crate also needs a feature-gated `use` in `delve-cli/src/main.rs`:
+
+```rust
+#[cfg(feature = "vendor-unifi")]
+use vendor_unifi as _;
+```
+
+Nothing else in the CLI names a vendor crate, and rustc doesn't link a
+dependency that's never referenced — without this line the crate's
+`inventory::submit!` never runs, the plugin silently never registers, and
+`dig --vendor <id>` reports "unknown vendor". (Every vendor was missing
+this until `vendor-unifi` was added.)
 
 `PluginRegistry::discover()` walks every registered `PluginDescriptor` at
 startup and instantiates each one — this picks up exactly the vendors
@@ -722,6 +747,101 @@ There's currently no way to exercise `discover`/`metadata` against a real
 site while the flag is `false` short of temporarily flipping it, which is
 its own small gap — see [Known gaps](#known-gaps).
 
+## Vendor: UniFi
+
+`vendor-unifi` (vendor id `unifi`) tracks Ubiquiti UniFi firmware from
+`https://fw-update.ui.com/api/firmware` — the API UniFi devices and
+controllers themselves poll for updates. It needs no credentials. Unlike
+`vendor-cisco`, every endpoint and field it uses was checked against live
+responses (September 2026), and its test fixtures are real records from
+those responses. The API is **undocumented**, though, so Ubiquiti can
+change it without notice; `vendor-unifi/src/api.rs`'s module doc comment
+lists exactly what was verified.
+
+### Scope: `unifi-firmware` only
+
+The plugin tracks the API's `unifi-firmware` product only: **UniFi network
+devices** — access points, switches, gateways, and older Cloud Keys
+(about 200 models). The same API lists many other Ubiquiti products under
+different names, and **none of these are tracked yet**:
+
+- UniFi OS consoles: `unifi-dream` (Dream Machines, Cloud Gateways),
+  `unifi-nvr`, `unifi-drive` (UNAS), `unifi-cloudkey` (newer Cloud Keys)
+- Protect cameras (`uvc`) and other Protect devices
+- Access, Talk, Connect and other UniFi application devices
+- Non-UniFi lines (airMAX, airFiber, EdgeRouter, EdgeSwitch, UISP, ...)
+
+Adding one is mostly a matter of widening the product filter in `api.rs`,
+but each has its own version quirks and should be checked the same way
+`unifi-firmware` was before it's enabled.
+
+### How API fields map to `FirmwareMetadata`
+
+| Field | API source |
+|---|---|
+| `device_family` | `platform` — the model code, e.g. `U7PG2` (UAP-AC-Pro), `USMINI` (USW-Flex-Mini) |
+| `hardware_targets` | `[platform]` |
+| `version` | `version` (e.g. `v6.6.77+15402`); ordinal from `version_major`/`minor`/`patch`/`build` — see `version.rs` |
+| `release_date` | `release_date` when present (rare), otherwise `created` (upload time) |
+| `sha256` | `sha256_checksum` — verified to match the downloaded file |
+| `release_notes_url` | `_links.changelog` — never present for `unifi-firmware` today |
+| `source_url` | the record's own API URL (`_links.self`) |
+| download (`fetch`) | `_links.data`, a direct file URL needing no login |
+
+### Requests per dig
+
+`discover()` makes **one** request: the API ignores `offset`, so there is no
+real pagination, and a single request with a large `limit` returns all
+~3,400 release records (about 3 MB). It caches the full records in memory,
+and `metadata()` answers from that cache instead of requesting each record
+— otherwise a dig would take about an hour at the default one request per
+second. A response that fills the whole `limit` is treated as possibly
+truncated and fails the dig rather than silently missing records.
+`unearth` makes two requests: the record (the cache is empty in a fresh
+process), then the file.
+
+### Terms of service
+
+`tos_reviewed` is `true`, set by the project owner in September 2026 after
+this review:
+
+- **robots.txt:** neither API host (`fw-update.ui.com`,
+  `fw-download.ubnt.com`) has one, and `www.ui.com`'s allows all crawlers.
+- **Terms of Service** (`https://www.ui.com/legal/termsofservice/`): no
+  clause about automated access or scraping. They do limit use to
+  "personal use … to use, manage and monitor Your Products", forbid
+  redistributing or republishing their content, and forbid interfering
+  with their servers.
+
+Tracking metadata and downloading images for your own use fit within
+that. **Redistributing downloaded images does not**, and the default one
+request per second plus one list request per dig keeps load on
+Ubiquiti's servers negligible. Re-check the terms if they change or if
+the plugin's use changes.
+
+### Notes to revisit
+
+- **Device family grouping.** `device_family` is currently the model code,
+  the same value as `hardware_targets`, because the API has no product-line
+  field. It should become a product line such as `USW`, `UXG`, `U7`, or
+  `U6`, so `catalog --device-family` can select a whole line. That needs a
+  hand-maintained mapping from model codes to lines, since the codes don't
+  encode it reliably. Changing it also changes every stored identity key,
+  so plan a `dig --vendor unifi --redig` alongside it.
+- **Beta firmware.** Only the `release` channel is tracked (`api::CHANNEL`).
+  The API also has `beta-public`. Tracking it needs a way to configure
+  channels, and a decision on identity: some versions appear in both
+  channels with identical files, and `select_records` currently keeps just
+  the newest record per model and version.
+- **Request efficiency and performance.** One ~3 MB request per dig is fine
+  today, but is worth revisiting:
+  - Enabling `reqwest`'s `gzip` feature would cut the transfer to ~530 KB.
+  - Per-model requests (`filter=eq~~platform~~<code>`) would let a dig
+    cover only chosen models, at one request per model.
+  - `/api/firmware-latest` returns only the newest version per model (~200
+    records) — much smaller, but it would miss re-published old versions.
+  - The in-memory cache holds every record for the life of the process.
+
 ## Naming
 
 `delve` — an archaeology-adjacent theme: "to dig into" doubling as "to
@@ -764,8 +884,9 @@ than a generic "history" would have been.
    Cisco account and expect it to work without checking each `// VERIFY:`
    marker first.
 
-2. **No vendor has `tos_reviewed: true`.** See
-   [Compliance](#compliance-tos-and-robotstxt) — don't flip
+2. **`vendor-cisco` doesn't have `tos_reviewed: true`.** See
+   [Compliance](#compliance-tos-and-robotstxt) (`vendor-unifi`'s review is
+   recorded in [Vendor: UniFi](#vendor-unifi)). Don't flip
    `vendor-cisco`'s flag without actually reading Cisco's robots.txt and
    ToS first. There's also still no dev escape hatch for exercising
    `discover`/`metadata` against a real site while the flag is `false` —
@@ -830,6 +951,18 @@ exists because of it, not as a design decision made up front.
   module's *assumed* schema: a passing test here proves the code is
   internally consistent, not that it matches Cisco's real API (see the
   module's doc comment and the "Known gaps" entry on this).
+- **`delve-vendors/vendor-unifi`**: list/detail parsing and field mapping
+  against **real** API records (`src/fixtures/`), skipping a single
+  malformed record without failing the rest, dropping records with no
+  file, other products and other channels, keeping only the newest
+  duplicate of a model and version, SHA-256 decoding, version ordinals
+  (numeric builds, Cloud Key git-hash builds, pre-releases as Opaque), and
+  `metadata()` being served from the discover cache without a request.
+  Two live tests are marked `#[ignore]` so they don't run by default or in
+  CI; run them with `cargo test -p vendor-unifi -- --ignored`. One runs
+  `discover` and `metadata` over every release record; the other downloads
+  a ~500 KB image with an empty cache (as `unearth` does) and checks it
+  against the published SHA-256.
 
 Not yet covered: the rest of `delve-cli`'s command handlers (`dig.rs`,
 `catalog.rs`, `provenance.rs`) — these are thin enough to mostly be

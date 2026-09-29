@@ -22,6 +22,8 @@ pub enum PluginError {
     UnexpectedResponse(String),
     #[error("vendor rejected the request (rate limited or blocked): {0}")]
     Rejected(String),
+    #[error("failed to write downloaded firmware: {0}")]
+    Sink(#[from] std::io::Error),
     #[error("not implemented yet")]
     Unimplemented,
 }

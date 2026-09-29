@@ -351,6 +351,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vendor-cisco",
+ "vendor-unifi",
 ]
 
 [[package]]
@@ -2394,6 +2395,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
+]
+
+[[package]]
+name = "vendor-unifi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "delve-core",
+ "inventory",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "url",
