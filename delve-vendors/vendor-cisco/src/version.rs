@@ -68,7 +68,11 @@ fn split_trailing_rebuild_letter(raw: &str) -> (&str, Option<char>) {
     if let Some(last) = raw.chars().last() {
         if last.is_ascii_lowercase() {
             let without_last = &raw[..raw.len() - last.len_utf8()];
-            if without_last.chars().last().is_some_and(|c| c.is_ascii_digit()) {
+            if without_last
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_digit())
+            {
                 return (without_last, Some(last));
             }
         }
@@ -96,8 +100,14 @@ mod tests {
         let base = parse_ios_xe_version("17.9.4").unwrap();
         let rebuild_a = parse_ios_xe_version("17.9.4a").unwrap();
         let rebuild_b = parse_ios_xe_version("17.9.4b").unwrap();
-        assert!(base < rebuild_a, "unlettered base release must sort before its first rebuild");
-        assert!(rebuild_a < rebuild_b, "rebuild 'a' must sort before rebuild 'b'");
+        assert!(
+            base < rebuild_a,
+            "unlettered base release must sort before its first rebuild"
+        );
+        assert!(
+            rebuild_a < rebuild_b,
+            "rebuild 'a' must sort before rebuild 'b'"
+        );
     }
 
     #[test]
@@ -107,7 +117,10 @@ mod tests {
         // the string "17.10.0" sorts before "17.9.4" character-by-character.
         let v_9_4 = parse_ios_xe_version("17.9.4").unwrap();
         let v_10_0 = parse_ios_xe_version("17.10.0").unwrap();
-        assert!(v_9_4 < v_10_0, "17.10.0 must be numerically newer than 17.9.4");
+        assert!(
+            v_9_4 < v_10_0,
+            "17.10.0 must be numerically newer than 17.9.4"
+        );
     }
 
     #[test]

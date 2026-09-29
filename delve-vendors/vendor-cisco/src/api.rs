@@ -50,14 +50,18 @@ pub struct CiscoProduct {
     pub base_pid: &'static str,
 }
 
-pub const KNOWN_PRODUCTS: &[CiscoProduct] =
-    &[CiscoProduct { device_family: "isr4000", base_pid: "ISR4000" }];
+pub const KNOWN_PRODUCTS: &[CiscoProduct] = &[CiscoProduct {
+    device_family: "isr4000",
+    base_pid: "ISR4000",
+}];
 
 // VERIFY: endpoint path and query/path-param name for listing suggestions
 // by base PID. This is the single most likely thing here to be wrong or
 // outdated — Cisco API paths change.
 pub fn suggestions_list_url(base_pid: &str) -> String {
-    format!("https://apix.cisco.com/software/suggestion/v2/suggestions/software/productIds/{base_pid}")
+    format!(
+        "https://apix.cisco.com/software/suggestion/v2/suggestions/software/productIds/{base_pid}"
+    )
 }
 
 // VERIFY: whether this endpoint exists at all — see this module's top doc
@@ -110,16 +114,23 @@ pub enum MapError {
 /// per-release detail endpoint (see this module's top doc comment) so
 /// `metadata()` can fetch exactly one release's data rather than
 /// re-parsing the whole list.
-pub fn parse_suggestion_list(body: &str, vendor: &str, device_family: &str) -> Result<Vec<FirmwareRef>, PluginError> {
-    let parsed: SuggestionListResponse =
-        serde_json::from_str(body).map_err(|e| PluginError::Parse(format!("Cisco suggestion list: {e}")))?;
+pub fn parse_suggestion_list(
+    body: &str,
+    vendor: &str,
+    device_family: &str,
+) -> Result<Vec<FirmwareRef>, PluginError> {
+    let parsed: SuggestionListResponse = serde_json::from_str(body)
+        .map_err(|e| PluginError::Parse(format!("Cisco suggestion list: {e}")))?;
 
     let mut refs = Vec::new();
     for product in parsed.product_list {
         for suggestion in product.suggestions {
-            let source_url = suggestion_detail_url(&suggestion.id)
-                .parse()
-                .map_err(|e| PluginError::Parse(format!("invalid detail URL for suggestion {}: {e}", suggestion.id)))?;
+            let source_url = suggestion_detail_url(&suggestion.id).parse().map_err(|e| {
+                PluginError::Parse(format!(
+                    "invalid detail URL for suggestion {}: {e}",
+                    suggestion.id
+                ))
+            })?;
             refs.push(FirmwareRef {
                 vendor: vendor.to_string(),
                 device_family: device_family.to_string(),
@@ -141,13 +152,20 @@ pub fn parse_suggestion_detail(
     body: &str,
     hardware_target: &str,
 ) -> Result<FirmwareMetadata, PluginError> {
-    let suggestion: SoftwareSuggestion =
-        serde_json::from_str(body).map_err(|e| PluginError::Parse(format!("Cisco suggestion detail: {e}")))?;
-    suggestion_to_metadata(&suggestion, hardware_target).map_err(|e| PluginError::Parse(e.to_string()))
+    let suggestion: SoftwareSuggestion = serde_json::from_str(body)
+        .map_err(|e| PluginError::Parse(format!("Cisco suggestion detail: {e}")))?;
+    suggestion_to_metadata(&suggestion, hardware_target)
+        .map_err(|e| PluginError::Parse(e.to_string()))
 }
 
-fn suggestion_to_metadata(suggestion: &SoftwareSuggestion, hardware_target: &str) -> Result<FirmwareMetadata, MapError> {
-    let raw_version = suggestion.release_format.clone().ok_or(MapError::MissingVersion)?;
+fn suggestion_to_metadata(
+    suggestion: &SoftwareSuggestion,
+    hardware_target: &str,
+) -> Result<FirmwareMetadata, MapError> {
+    let raw_version = suggestion
+        .release_format
+        .clone()
+        .ok_or(MapError::MissingVersion)?;
     let version = match parse_ios_xe_version(&raw_version) {
         Some(ordinal) => VersionKey {
             raw: raw_version,
@@ -161,7 +179,10 @@ fn suggestion_to_metadata(suggestion: &SoftwareSuggestion, hardware_target: &str
     };
 
     let release_notes_url = match &suggestion.release_notes_url {
-        Some(url) => Some(url.parse().map_err(|_| MapError::InvalidReleaseNotesUrl(url.clone()))?),
+        Some(url) => Some(
+            url.parse()
+                .map_err(|_| MapError::InvalidReleaseNotesUrl(url.clone()))?,
+        ),
         None => None,
     };
 
@@ -228,7 +249,9 @@ mod tests {
     fn parses_the_list_fixture_into_one_ref_per_suggestion() {
         let refs = parse_suggestion_list(LIST_FIXTURE, "cisco", "isr4000").unwrap();
         assert_eq!(refs.len(), 2);
-        assert!(refs.iter().all(|r| r.vendor == "cisco" && r.device_family == "isr4000"));
+        assert!(refs
+            .iter()
+            .all(|r| r.vendor == "cisco" && r.device_family == "isr4000"));
     }
 
     #[test]
@@ -255,14 +278,20 @@ mod tests {
     fn parses_the_detail_fixture_into_metadata_with_a_vendor_numeric_version() {
         let meta = parse_suggestion_detail(DETAIL_FIXTURE, "ISR4000").unwrap();
         assert_eq!(meta.version.raw, "17.9.4a");
-        assert!(matches!(meta.version.scheme, delve_core::model::VersionScheme::VendorNumeric));
+        assert!(matches!(
+            meta.version.scheme,
+            delve_core::model::VersionScheme::VendorNumeric
+        ));
         assert_eq!(meta.version.ordinal, Some(vec![17, 9, 4, 1]));
     }
 
     #[test]
     fn detail_release_date_parses_as_iso8601() {
         let meta = parse_suggestion_detail(DETAIL_FIXTURE, "ISR4000").unwrap();
-        assert_eq!(meta.release_date, Some(NaiveDate::from_ymd_opt(2023, 5, 12).unwrap()));
+        assert_eq!(
+            meta.release_date,
+            Some(NaiveDate::from_ymd_opt(2023, 5, 12).unwrap())
+        );
     }
 
     #[test]
@@ -286,14 +315,21 @@ mod tests {
             release_notes_url: None,
         };
         let meta = suggestion_to_metadata(&suggestion, "ISR4000").unwrap();
-        assert!(matches!(meta.version.scheme, delve_core::model::VersionScheme::Opaque));
+        assert!(matches!(
+            meta.version.scheme,
+            delve_core::model::VersionScheme::Opaque
+        ));
         assert_eq!(meta.version.ordinal, None);
     }
 
     #[test]
     fn a_missing_release_format_is_a_mapping_error_not_a_fabricated_version() {
-        let suggestion =
-            SoftwareSuggestion { id: "xyz".to_string(), release_format: None, release_date: None, release_notes_url: None };
+        let suggestion = SoftwareSuggestion {
+            id: "xyz".to_string(),
+            release_format: None,
+            release_date: None,
+            release_notes_url: None,
+        };
         let result = suggestion_to_metadata(&suggestion, "ISR4000");
         assert!(matches!(result, Err(MapError::MissingVersion)));
     }
@@ -307,6 +343,9 @@ mod tests {
             release_notes_url: None,
         };
         let meta = suggestion_to_metadata(&suggestion, "ISR4000").unwrap();
-        assert_eq!(meta.release_date, None, "an unparseable date should degrade to None, not fail the whole mapping");
+        assert_eq!(
+            meta.release_date, None,
+            "an unparseable date should degrade to None, not fail the whole mapping"
+        );
     }
 }

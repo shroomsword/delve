@@ -6,7 +6,11 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "delve", version, about = "Embedded firmware scraper and notification framework")]
+#[command(
+    name = "delve",
+    version,
+    about = "Embedded firmware scraper and notification framework"
+)]
 pub struct Cli {
     /// Override the default config path (~/.config/delve/config.toml) — see
     /// the README's "Configuration reference" section.
@@ -108,7 +112,11 @@ impl SelectorArgs {
             id: self.id,
             vendor: self.vendor,
             device_family: self.device_family,
-            hardware: if self.hardware.is_empty() { None } else { Some(self.hardware) },
+            hardware: if self.hardware.is_empty() {
+                None
+            } else {
+                Some(self.hardware)
+            },
             version: self.version,
             latest: self.latest,
         }

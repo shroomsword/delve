@@ -18,11 +18,15 @@ async fn main() -> anyhow::Result<()> {
     let registry = delve_core::plugin::PluginRegistry::discover();
 
     match cli.command {
-        Command::Dig { vendor, redig } => commands::dig::run(&config, &registry, &store, vendor, redig).await,
+        Command::Dig { vendor, redig } => {
+            commands::dig::run(&config, &registry, &store, vendor, redig).await
+        }
         Command::Catalog { selector, long } => commands::catalog::run(&store, selector, long).await,
         Command::Provenance { selector } => commands::provenance::run(&store, selector).await,
-        Command::Unearth { selector, out, no_verify } => {
-            commands::unearth::run(&registry, &store, &config, selector, out, no_verify).await
-        }
+        Command::Unearth {
+            selector,
+            out,
+            no_verify,
+        } => commands::unearth::run(&registry, &store, &config, selector, out, no_verify).await,
     }
 }

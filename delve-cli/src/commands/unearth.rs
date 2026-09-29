@@ -36,7 +36,10 @@ impl ArtifactSink for FileSink {
 
 impl FileSink {
     fn create(path: &std::path::Path) -> std::io::Result<Self> {
-        Ok(Self { file: std::fs::File::create(path)?, hasher: Sha256::new() })
+        Ok(Self {
+            file: std::fs::File::create(path)?,
+            hasher: Sha256::new(),
+        })
     }
 
     /// Consumes the sink's hasher to produce the final digest. Takes `self`
@@ -112,12 +115,19 @@ pub async fn run(
         let computed = sink.finalize_sha256();
         if let Some(expected) = entry.sha256 {
             if computed != expected {
-                anyhow::bail!("sha256 mismatch after download — pass --no-verify to skip this check");
+                anyhow::bail!(
+                    "sha256 mismatch after download — pass --no-verify to skip this check"
+                );
             }
         }
     }
 
-    println!("Unearthed {} {} to {}", vendor_id, entry.version.raw, out.display());
+    println!(
+        "Unearthed {} {} to {}",
+        vendor_id,
+        entry.version.raw,
+        out.display()
+    );
     Ok(())
 }
 
@@ -132,7 +142,8 @@ mod tests {
     /// "does it compile" check wouldn't.
     #[test]
     fn file_sink_computes_the_correct_sha256_for_a_known_test_vector() {
-        let path = std::env::temp_dir().join(format!("delve-test-sink-{}.bin", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("delve-test-sink-{}.bin", uuid::Uuid::new_v4()));
         let mut sink = FileSink::create(&path).expect("temp file should be creatable");
 
         sink.write_chunk(b"abc").unwrap();
@@ -142,14 +153,18 @@ mod tests {
         let hex: String = computed.iter().map(|b| format!("{:02x}", b)).collect();
 
         // Standard published test vector: SHA-256("abc")
-        assert_eq!(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        assert_eq!(
+            hex,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn file_sink_computes_the_correct_sha256_for_empty_input() {
-        let path = std::env::temp_dir().join(format!("delve-test-sink-{}.bin", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("delve-test-sink-{}.bin", uuid::Uuid::new_v4()));
         let mut sink = FileSink::create(&path).expect("temp file should be creatable");
 
         sink.finish().unwrap(); // no write_chunk calls at all
@@ -158,7 +173,10 @@ mod tests {
         let hex: String = computed.iter().map(|b| format!("{:02x}", b)).collect();
 
         // Standard published test vector: SHA-256("")
-        assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            hex,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -168,7 +186,8 @@ mod tests {
         // A real download arrives in many chunks — the hash must be over
         // the concatenation of all of them, not just the last one written,
         // and must match hashing the same bytes in one shot.
-        let path = std::env::temp_dir().join(format!("delve-test-sink-{}.bin", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("delve-test-sink-{}.bin", uuid::Uuid::new_v4()));
         let mut sink = FileSink::create(&path).expect("temp file should be creatable");
 
         sink.write_chunk(b"ab").unwrap();

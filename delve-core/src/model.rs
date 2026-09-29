@@ -151,7 +151,11 @@ mod tests {
     fn key(raw: &str, ordinal: Option<Vec<u64>>) -> VersionKey {
         VersionKey {
             raw: raw.to_string(),
-            scheme: if ordinal.is_some() { VersionScheme::Semver } else { VersionScheme::Opaque },
+            scheme: if ordinal.is_some() {
+                VersionScheme::Semver
+            } else {
+                VersionScheme::Opaque
+            },
             ordinal,
         }
     }
@@ -160,7 +164,10 @@ mod tests {
     fn hardware_key_sorts_and_joins_regardless_of_input_order() {
         let a = hardware_key(&["rev-b".into(), "rev-a".into()]);
         let b = hardware_key(&["rev-a".into(), "rev-b".into()]);
-        assert_eq!(a, b, "order of hardware_targets must not affect the derived key");
+        assert_eq!(
+            a, b,
+            "order of hardware_targets must not affect the derived key"
+        );
         assert_eq!(a, "rev-a+rev-b");
     }
 
@@ -191,7 +198,10 @@ mod tests {
     fn version_key_ordering_compares_ordinals_lexicographically() {
         let older = key("1.2.0", Some(vec![1, 2, 0]));
         let newer = key("1.10.0", Some(vec![1, 10, 0]));
-        assert!(older < newer, "1.10.0 must sort after 1.2.0 by numeric tuple, not string compare");
+        assert!(
+            older < newer,
+            "1.10.0 must sort after 1.2.0 by numeric tuple, not string compare"
+        );
     }
 
     #[test]
@@ -211,7 +221,10 @@ mod tests {
         // guessed direction.
         let a = key("build-2024-01", None);
         let b = key("build-2024-07", None);
-        assert_eq!(VersionDirection::between(&a, &b), VersionDirection::Unordered);
+        assert_eq!(
+            VersionDirection::between(&a, &b),
+            VersionDirection::Unordered
+        );
     }
 
     #[test]
@@ -220,6 +233,9 @@ mod tests {
         let b = key("1.0.0-rebuild", Some(vec![1, 0, 0]));
         // Equal ordinals produce Ordering::Equal, which `between` maps to
         // Unordered (neither Newer nor Older) rather than picking one.
-        assert_eq!(VersionDirection::between(&a, &b), VersionDirection::Unordered);
+        assert_eq!(
+            VersionDirection::between(&a, &b),
+            VersionDirection::Unordered
+        );
     }
 }

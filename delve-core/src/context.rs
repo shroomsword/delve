@@ -46,22 +46,17 @@ pub enum TorMode {
     Embedded,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub enum CircuitIsolation {
     /// One circuit for the whole run.
     Shared,
     /// New circuit per vendor. Default — balances not looking like a single
     /// abusive client to any one vendor against exhausting the exit-node
     /// pool with `PerRequest`.
+    #[default]
     PerVendor,
     /// New circuit per request — safest, slowest.
     PerRequest,
-}
-
-impl Default for CircuitIsolation {
-    fn default() -> Self {
-        CircuitIsolation::PerVendor
-    }
 }
 
 #[derive(Debug, Error)]
@@ -128,7 +123,9 @@ impl Default for RateLimit {
         // whose robots.txt specifies an actual crawl-delay should have
         // that reflected via a per-vendor override in config rather than
         // relying on this guess.
-        Self { min_interval: Duration::from_secs(1) }
+        Self {
+            min_interval: Duration::from_secs(1),
+        }
     }
 }
 
@@ -145,7 +142,10 @@ struct RateLimiter {
 
 impl RateLimiter {
     fn new(rate_limit: RateLimit) -> Self {
-        Self { min_interval: rate_limit.min_interval, last_request: Mutex::new(None) }
+        Self {
+            min_interval: rate_limit.min_interval,
+            last_request: Mutex::new(None),
+        }
     }
 
     /// Blocks until at least `min_interval` has passed since the previous
@@ -196,7 +196,12 @@ impl ScrapeContext {
         rate_limit: RateLimit,
     ) -> Result<Self, TransportError> {
         let client = Self::build_http_client(&transport, &http)?;
-        Ok(Self { transport, client, credentials, rate_limiter: RateLimiter::new(rate_limit) })
+        Ok(Self {
+            transport,
+            client,
+            credentials,
+            rate_limiter: RateLimiter::new(rate_limit),
+        })
     }
 
     pub fn http_client(&self) -> &reqwest::Client {
@@ -236,7 +241,10 @@ impl ScrapeContext {
         self.rate_limiter.acquire().await;
     }
 
-    fn build_http_client(transport: &Transport, http: &HttpClientConfig) -> Result<reqwest::Client, TransportError> {
+    fn build_http_client(
+        transport: &Transport,
+        http: &HttpClientConfig,
+    ) -> Result<reqwest::Client, TransportError> {
         let builder = reqwest::Client::builder()
             .user_agent(http.user_agent.clone())
             .timeout(http.request_timeout)
@@ -282,7 +290,10 @@ pub fn resolve_transport(
     overrides: &TransportOverrides,
     vendor_id: &str,
 ) -> Transport {
-    overrides.get(vendor_id).cloned().unwrap_or_else(|| default.clone())
+    overrides
+        .get(vendor_id)
+        .cloned()
+        .unwrap_or_else(|| default.clone())
 }
 
 /// Resolves the effective rate limit for a vendor: override if present,
@@ -313,7 +324,12 @@ pub fn context_for_vendor(
 ) -> Result<Arc<ScrapeContext>, TransportError> {
     let transport = resolve_transport(default_transport, transport_overrides, vendor_id);
     let rate_limit = resolve_rate_limit(default_rate_limit, rate_limit_overrides, vendor_id);
-    Ok(Arc::new(ScrapeContext::new(transport, credentials, http.clone(), rate_limit)?))
+    Ok(Arc::new(ScrapeContext::new(
+        transport,
+        credentials,
+        http.clone(),
+        rate_limit,
+    )?))
 }
 
 #[cfg(test)]
@@ -321,8 +337,13 @@ mod tests {
     use super::*;
 
     fn ctx_with(credentials: Credentials) -> ScrapeContext {
-        ScrapeContext::new(Transport::Direct, credentials, HttpClientConfig::default(), RateLimit::default())
-            .expect("Direct transport never fails to build")
+        ScrapeContext::new(
+            Transport::Direct,
+            credentials,
+            HttpClientConfig::default(),
+            RateLimit::default(),
+        )
+        .expect("Direct transport never fails to build")
     }
 
     #[test]
@@ -333,7 +354,10 @@ mod tests {
 
     #[test]
     fn credential_returns_the_value_when_configured() {
-        let ctx = ctx_with(Credentials::from([("username".to_string(), "alice".to_string())]));
+        let ctx = ctx_with(Credentials::from([(
+            "username".to_string(),
+            "alice".to_string(),
+        )]));
         assert_eq!(ctx.credential("username"), Some("alice"));
     }
 
@@ -343,7 +367,10 @@ mod tests {
         let err = ctx.require_credential("password").unwrap_err();
         match err {
             PluginError::Rejected(msg) => {
-                assert!(msg.contains("password"), "error message should name the missing key");
+                assert!(
+                    msg.contains("password"),
+                    "error message should name the missing key"
+                );
             }
             other => panic!("expected PluginError::Rejected, got {other:?}"),
         }
@@ -351,7 +378,10 @@ mod tests {
 
     #[test]
     fn require_credential_succeeds_when_present() {
-        let ctx = ctx_with(Credentials::from([("token".to_string(), "abc123".to_string())]));
+        let ctx = ctx_with(Credentials::from([(
+            "token".to_string(),
+            "abc123".to_string(),
+        )]));
         assert_eq!(ctx.require_credential("token").unwrap(), "abc123");
     }
 
@@ -378,13 +408,23 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(2),
         };
-        let result = ScrapeContext::new(Transport::Direct, Credentials::new(), http, RateLimit::default());
-        assert!(result.is_ok(), "a well-formed HttpClientConfig must not fail client construction");
+        let result = ScrapeContext::new(
+            Transport::Direct,
+            Credentials::new(),
+            http,
+            RateLimit::default(),
+        );
+        assert!(
+            result.is_ok(),
+            "a well-formed HttpClientConfig must not fail client construction"
+        );
     }
 
     #[test]
     fn resolve_rate_limit_falls_back_to_default_when_no_override_exists() {
-        let default = RateLimit { min_interval: Duration::from_millis(500) };
+        let default = RateLimit {
+            min_interval: Duration::from_millis(500),
+        };
         let overrides = RateLimitOverrides::new();
         let resolved = resolve_rate_limit(&default, &overrides, "cisco");
         assert_eq!(resolved.min_interval, Duration::from_millis(500));
@@ -392,9 +432,15 @@ mod tests {
 
     #[test]
     fn resolve_rate_limit_uses_the_per_vendor_override_when_present() {
-        let default = RateLimit { min_interval: Duration::from_millis(500) };
-        let overrides =
-            RateLimitOverrides::from([("cisco".to_string(), RateLimit { min_interval: Duration::from_secs(3) })]);
+        let default = RateLimit {
+            min_interval: Duration::from_millis(500),
+        };
+        let overrides = RateLimitOverrides::from([(
+            "cisco".to_string(),
+            RateLimit {
+                min_interval: Duration::from_secs(3),
+            },
+        )]);
         let resolved = resolve_rate_limit(&default, &overrides, "cisco");
         assert_eq!(resolved.min_interval, Duration::from_secs(3));
 
@@ -409,13 +455,19 @@ mod tests {
             Transport::Direct,
             Credentials::new(),
             HttpClientConfig::default(),
-            RateLimit { min_interval: Duration::from_millis(500) },
+            RateLimit {
+                min_interval: Duration::from_millis(500),
+            },
         )
         .unwrap();
 
         let start = Instant::now();
         ctx.throttle().await;
-        assert_eq!(Instant::now(), start, "the very first throttle call must not wait at all");
+        assert_eq!(
+            Instant::now(),
+            start,
+            "the very first throttle call must not wait at all"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -424,7 +476,9 @@ mod tests {
             Transport::Direct,
             Credentials::new(),
             HttpClientConfig::default(),
-            RateLimit { min_interval: Duration::from_millis(500) },
+            RateLimit {
+                min_interval: Duration::from_millis(500),
+            },
         )
         .unwrap();
 
@@ -444,7 +498,9 @@ mod tests {
             Transport::Direct,
             Credentials::new(),
             HttpClientConfig::default(),
-            RateLimit { min_interval: Duration::from_millis(500) },
+            RateLimit {
+                min_interval: Duration::from_millis(500),
+            },
         )
         .unwrap();
 
@@ -453,7 +509,11 @@ mod tests {
 
         let before = Instant::now();
         ctx.throttle().await;
-        assert_eq!(Instant::now(), before, "no additional wait needed once the interval has already elapsed");
+        assert_eq!(
+            Instant::now(),
+            before,
+            "no additional wait needed once the interval has already elapsed"
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -467,7 +527,9 @@ mod tests {
                 Transport::Direct,
                 Credentials::new(),
                 HttpClientConfig::default(),
-                RateLimit { min_interval: Duration::from_millis(500) },
+                RateLimit {
+                    min_interval: Duration::from_millis(500),
+                },
             )
             .unwrap(),
         );
@@ -475,7 +537,9 @@ mod tests {
         let start = Instant::now();
         let ctx_a = ctx.clone();
         let ctx_b = ctx.clone();
-        let (_, _) = tokio::join!(async move { ctx_a.throttle().await }, async move { ctx_b.throttle().await });
+        let (_, _) = tokio::join!(async move { ctx_a.throttle().await }, async move {
+            ctx_b.throttle().await
+        });
 
         // One of the two calls must have been delayed by roughly one
         // interval — total elapsed time for both to complete must be at

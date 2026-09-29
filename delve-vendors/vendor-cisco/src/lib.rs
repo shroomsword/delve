@@ -39,11 +39,15 @@ pub struct CiscoPlugin {
 
 impl CiscoPlugin {
     pub fn new() -> Self {
-        Self { tokens: TokenCache::new() }
+        Self {
+            tokens: TokenCache::new(),
+        }
     }
 
     fn product_for_device_family(device_family: &str) -> Option<&'static CiscoProduct> {
-        KNOWN_PRODUCTS.iter().find(|p| p.device_family == device_family)
+        KNOWN_PRODUCTS
+            .iter()
+            .find(|p| p.device_family == device_family)
     }
 }
 
@@ -102,7 +106,11 @@ impl VendorPlugin for CiscoPlugin {
         Ok(all_refs)
     }
 
-    async fn metadata(&self, ctx: &ScrapeContext, r: &FirmwareRef) -> Result<FirmwareMetadata, PluginError> {
+    async fn metadata(
+        &self,
+        ctx: &ScrapeContext,
+        r: &FirmwareRef,
+    ) -> Result<FirmwareMetadata, PluginError> {
         let client_id = ctx.require_credential("client_id")?;
         let client_secret = ctx.require_credential("client_secret")?;
         let token = self.tokens.get_token(ctx, client_id, client_secret).await?;

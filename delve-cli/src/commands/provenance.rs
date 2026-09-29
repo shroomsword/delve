@@ -20,7 +20,7 @@ pub async fn run(store: &dyn MetadataStore, selector: SelectorArgs) -> anyhow::R
     let key = FirmwareKey::from_metadata(&entry);
     let revisions = store.history(&key).await?;
 
-    println!("{:<24} {:<38} {}", "OBSERVED_AT", "RUN_ID", "VERSION / HASH");
+    println!("{:<24} {:<38} VERSION / HASH", "OBSERVED_AT", "RUN_ID");
     for rev in &revisions {
         let hash = rev
             .metadata

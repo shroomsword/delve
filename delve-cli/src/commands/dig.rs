@@ -32,7 +32,9 @@ pub async fn run(
         vec![Box::new(subscriber_log::LogSubscriber)];
     if let Some(webhook_cfg) = &config.subscribers.webhook {
         #[cfg(feature = "subscriber-webhook")]
-        subscribers.push(Box::new(subscriber_webhook::WebhookSubscriber::new(webhook_cfg.url.clone())));
+        subscribers.push(Box::new(subscriber_webhook::WebhookSubscriber::new(
+            webhook_cfg.url.clone(),
+        )));
         #[cfg(not(feature = "subscriber-webhook"))]
         {
             let _ = webhook_cfg;

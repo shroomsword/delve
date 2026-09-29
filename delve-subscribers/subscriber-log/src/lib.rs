@@ -17,7 +17,10 @@ impl Subscriber for LogSubscriber {
 
     async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError> {
         match event {
-            FirmwareEvent::NewRelease { firmware, first_seen } => {
+            FirmwareEvent::NewRelease {
+                firmware,
+                first_seen,
+            } => {
                 tracing::info!(
                     version = %firmware.version.raw,
                     first_seen = %first_seen,

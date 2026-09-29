@@ -162,17 +162,31 @@ impl TransportConfig {
 
     /// Builds the default rate limit plus per-vendor overrides, resolved
     /// the same way `resolve()` does for `Transport`.
-    pub fn rate_limits(&self) -> (delve_core::context::RateLimit, delve_core::context::RateLimitOverrides) {
+    pub fn rate_limits(
+        &self,
+    ) -> (
+        delve_core::context::RateLimit,
+        delve_core::context::RateLimitOverrides,
+    ) {
         let default_ms = self.min_request_interval_ms.unwrap_or_else(|| {
-            delve_core::context::RateLimit::default().min_interval.as_millis() as u64
+            delve_core::context::RateLimit::default()
+                .min_interval
+                .as_millis() as u64
         });
-        let default = delve_core::context::RateLimit { min_interval: std::time::Duration::from_millis(default_ms) };
+        let default = delve_core::context::RateLimit {
+            min_interval: std::time::Duration::from_millis(default_ms),
+        };
 
         let overrides = self
             .rate_limit_overrides
             .iter()
             .map(|(vendor, ms)| {
-                (vendor.clone(), delve_core::context::RateLimit { min_interval: std::time::Duration::from_millis(*ms) })
+                (
+                    vendor.clone(),
+                    delve_core::context::RateLimit {
+                        min_interval: std::time::Duration::from_millis(*ms),
+                    },
+                )
             })
             .collect();
 
@@ -189,7 +203,9 @@ fn resolve_kind(kind: &TransportKind) -> anyhow::Result<Transport> {
             },
             circuit_isolation: delve_core::context::CircuitIsolation::PerVendor,
         }),
-        TransportKind::Socks5 { addr } => Transport::Socks5 { addr: addr.parse()? },
+        TransportKind::Socks5 { addr } => Transport::Socks5 {
+            addr: addr.parse()?,
+        },
     })
 }
 
@@ -269,10 +285,16 @@ pub fn load(override_path: Option<&Path>) -> anyhow::Result<Config> {
                 database_path: default_db_path(),
             });
         }
-        Err(e) => return Err(anyhow::anyhow!("failed to read config at {}: {e}", path.display())),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to read config at {}: {e}",
+                path.display()
+            ))
+        }
     };
 
-    toml::from_str(&contents).map_err(|e| anyhow::anyhow!("failed to parse config at {}: {e}", path.display()))
+    toml::from_str(&contents)
+        .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {e}", path.display()))
 }
 
 #[cfg(test)]
@@ -281,7 +303,8 @@ mod tests {
 
     #[test]
     fn empty_config_parses_with_all_defaults() {
-        let config: Config = toml::from_str("").expect("an empty file must parse — every field has a default");
+        let config: Config =
+            toml::from_str("").expect("an empty file must parse — every field has a default");
         assert!(config.vendors.enabled.is_empty());
         assert!(config.subscribers.webhook.is_none());
         assert!(config.transport.default.is_none());
@@ -296,7 +319,10 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(config.vendors.enabled, vec!["cisco".to_string(), "netgear".to_string()]);
+        assert_eq!(
+            config.vendors.enabled,
+            vec!["cisco".to_string(), "netgear".to_string()]
+        );
     }
 
     #[test]
@@ -332,7 +358,9 @@ mod tests {
                         "the conventional Tor SOCKS port — see the README's \"Transport and proxying\" section"
                     );
                 }
-                delve_core::context::TorMode::Embedded => panic!("expected ExternalDaemon, not Embedded, by default"),
+                delve_core::context::TorMode::Embedded => {
+                    panic!("expected ExternalDaemon, not Embedded, by default")
+                }
             },
             other => panic!("expected Tor, got {other:?}"),
         }
@@ -351,12 +379,18 @@ mod tests {
         )
         .unwrap();
         let (default, overrides) = config.transport.resolve().unwrap();
-        assert!(matches!(default, delve_core::context::Transport::Tor(_)), "default must stay Tor");
+        assert!(
+            matches!(default, delve_core::context::Transport::Tor(_)),
+            "default must stay Tor"
+        );
         assert!(
             matches!(overrides.get("cisco"), Some(delve_core::context::Transport::Direct)),
             "cisco's override must resolve to Direct, per the README's \"Transport and proxying\" per-vendor override example"
         );
-        assert!(overrides.get("netgear").is_none(), "a vendor with no override entry must not appear in the map");
+        assert!(
+            !overrides.contains_key("netgear"),
+            "a vendor with no override entry must not appear in the map"
+        );
     }
 
     #[test]
@@ -388,7 +422,10 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(config.transport.resolve().is_err(), "a malformed address must error, not silently become Direct");
+        assert!(
+            config.transport.resolve().is_err(),
+            "a malformed address must error, not silently become Direct"
+        );
     }
 
     #[test]
@@ -514,7 +551,10 @@ mod tests {
         )
         .unwrap();
         let http = config.transport.http_client_config();
-        assert_eq!(http.user_agent, "my-scraper/2.0 (contact: ops@example.test)");
+        assert_eq!(
+            http.user_agent,
+            "my-scraper/2.0 (contact: ops@example.test)"
+        );
         assert_eq!(http.request_timeout, std::time::Duration::from_secs(60));
         assert_eq!(http.connect_timeout, std::time::Duration::from_secs(5));
     }
@@ -576,6 +616,9 @@ mod tests {
             overrides.get("cisco").unwrap().min_interval,
             std::time::Duration::from_millis(5000)
         );
-        assert!(overrides.get("netgear").is_none(), "a vendor with no override entry must not appear in the map");
+        assert!(
+            !overrides.contains_key("netgear"),
+            "a vendor with no override entry must not appear in the map"
+        );
     }
 }

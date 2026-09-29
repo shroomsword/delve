@@ -46,7 +46,10 @@ fn diff_fields(
     diffs
 }
 
-async fn determine_run_kind(store: &dyn MetadataStore, vendor_id: &str) -> Result<RunKind, StoreError> {
+async fn determine_run_kind(
+    store: &dyn MetadataStore,
+    vendor_id: &str,
+) -> Result<RunKind, StoreError> {
     match store.has_completed_baseline(vendor_id).await? {
         true => Ok(RunKind::Incremental),
         false => Ok(RunKind::Baseline),
@@ -123,8 +126,9 @@ async fn run_loop(
         // its own it can't tell a bump apart from a first-ever release).
         let exact_key = crate::store::FirmwareKey::from_ref_and_metadata(&r, &fresh);
         let exact_prior = store.lookup(&exact_key).await?;
-        let latest_known_before_this =
-            store.latest_known(&fresh.vendor, &fresh.device_family, &fresh.hardware_targets).await?;
+        let latest_known_before_this = store
+            .latest_known(&fresh.vendor, &fresh.device_family, &fresh.hardware_targets)
+            .await?;
 
         // Always persisted, regardless of run_kind.
         store.upsert(&r, &fresh, run_id).await?;
@@ -224,18 +228,28 @@ mod tests {
         }
 
         fn capabilities(&self) -> PluginCapabilities {
-            PluginCapabilities { tos_reviewed: true, supports_signature_verification: false }
+            PluginCapabilities {
+                tos_reviewed: true,
+                supports_signature_verification: false,
+            }
         }
 
         async fn discover(&self, _ctx: &ScrapeContext) -> Result<Vec<FirmwareRef>, PluginError> {
             Ok(self.refs.clone())
         }
 
-        async fn metadata(&self, _ctx: &ScrapeContext, r: &FirmwareRef) -> Result<FirmwareMetadata, PluginError> {
+        async fn metadata(
+            &self,
+            _ctx: &ScrapeContext,
+            r: &FirmwareRef,
+        ) -> Result<FirmwareMetadata, PluginError> {
             match self.metadata_by_url.get(r.source_url.as_str()) {
                 Some(Ok(m)) => Ok(m.clone()),
                 Some(Err(msg)) => Err(PluginError::UnexpectedResponse(msg.clone())),
-                None => Err(PluginError::UnexpectedResponse(format!("no mock metadata for {}", r.source_url))),
+                None => Err(PluginError::UnexpectedResponse(format!(
+                    "no mock metadata for {}",
+                    r.source_url
+                ))),
             }
         }
 
@@ -287,7 +301,10 @@ mod tests {
 
     #[async_trait]
     impl MetadataStore for MockStore {
-        async fn lookup(&self, key: &FirmwareKey<'_>) -> Result<Option<FirmwareMetadata>, StoreError> {
+        async fn lookup(
+            &self,
+            key: &FirmwareKey<'_>,
+        ) -> Result<Option<FirmwareMetadata>, StoreError> {
             let hw = crate::model::hardware_key(key.hardware_targets);
             let k = composite_key(key.vendor, key.device_family, &hw, key.version_raw);
             Ok(self.current.lock().unwrap().get(&k).cloned())
@@ -318,7 +335,12 @@ mod tests {
                 .cloned())
         }
 
-        async fn upsert(&self, r: &FirmwareRef, meta: &FirmwareMetadata, run_id: Uuid) -> Result<(), StoreError> {
+        async fn upsert(
+            &self,
+            r: &FirmwareRef,
+            meta: &FirmwareMetadata,
+            run_id: Uuid,
+        ) -> Result<(), StoreError> {
             let hw = crate::model::hardware_key(&meta.hardware_targets);
             let k = composite_key(&r.vendor, &r.device_family, &hw, &meta.version.raw);
             self.current.lock().unwrap().insert(k, meta.clone());
@@ -353,7 +375,10 @@ mod tests {
             Ok(())
         }
 
-        async fn history(&self, key: &FirmwareKey<'_>) -> Result<Vec<FirmwareRevision>, StoreError> {
+        async fn history(
+            &self,
+            key: &FirmwareKey<'_>,
+        ) -> Result<Vec<FirmwareRevision>, StoreError> {
             let hw = crate::model::hardware_key(key.hardware_targets);
             Ok(self
                 .revisions
@@ -381,11 +406,17 @@ mod tests {
                 .collect())
         }
 
-        async fn resolve_one(&self, _selector: &FirmwareSelector) -> Result<Option<FirmwareMetadata>, StoreError> {
+        async fn resolve_one(
+            &self,
+            _selector: &FirmwareSelector,
+        ) -> Result<Option<FirmwareMetadata>, StoreError> {
             unimplemented!("not exercised by engine tests — see delve-store-sqlite's test suite")
         }
 
-        async fn resolve_many(&self, _selector: &FirmwareSelector) -> Result<Vec<FirmwareMetadata>, StoreError> {
+        async fn resolve_many(
+            &self,
+            _selector: &FirmwareSelector,
+        ) -> Result<Vec<FirmwareMetadata>, StoreError> {
             unimplemented!("not exercised by engine tests — see delve-store-sqlite's test suite")
         }
     }
@@ -413,8 +444,13 @@ mod tests {
     // ---------------------------------------------------------------
 
     fn ctx() -> ScrapeContext {
-        ScrapeContext::new(Transport::Direct, Default::default(), Default::default(), Default::default())
-            .expect("Direct transport never fails to build")
+        ScrapeContext::new(
+            Transport::Direct,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        )
+        .expect("Direct transport never fails to build")
     }
 
     fn firmware_ref(url: &str) -> FirmwareRef {
@@ -435,7 +471,11 @@ mod tests {
             // only matters for tests that pre-populate "prior state"
             // directly via store.upsert, bypassing the engine.
             source_url: "https://example.test/a".parse().unwrap(),
-            version: VersionKey { raw: version.into(), scheme: VersionScheme::Semver, ordinal: Some(ordinal) },
+            version: VersionKey {
+                raw: version.into(),
+                scheme: VersionScheme::Semver,
+                ordinal: Some(ordinal),
+            },
             release_date: None,
             sha256: Some([sha_byte; 32]),
             signature: None,
@@ -456,23 +496,41 @@ mod tests {
 
     #[tokio::test]
     async fn baseline_run_persists_everything_but_publishes_no_events() {
-        let refs = vec![firmware_ref("https://example.test/a"), firmware_ref("https://example.test/b")];
+        let refs = vec![
+            firmware_ref("https://example.test/a"),
+            firmware_ref("https://example.test/b"),
+        ];
         let mut metadata_by_url = HashMap::new();
-        metadata_by_url.insert("https://example.test/a".to_string(), Ok(metadata("1.0.0", vec![1, 0, 0], 1)));
-        metadata_by_url.insert("https://example.test/b".to_string(), Ok(metadata("1.1.0", vec![1, 1, 0], 2)));
-        let plugin = MockPlugin { refs, metadata_by_url };
+        metadata_by_url.insert(
+            "https://example.test/a".to_string(),
+            Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
+        );
+        metadata_by_url.insert(
+            "https://example.test/b".to_string(),
+            Ok(metadata("1.1.0", vec![1, 1, 0], 2)),
+        );
+        let plugin = MockPlugin {
+            refs,
+            metadata_by_url,
+        };
 
         let store = MockStore::default();
         let (bus, events) = bus_with_collector();
 
-        dig_vendor(&plugin, &ctx(), &store, &bus).await.expect("baseline dig should succeed");
+        dig_vendor(&plugin, &ctx(), &store, &bus)
+            .await
+            .expect("baseline dig should succeed");
 
         assert!(events.lock().unwrap().is_empty(), "first-ever dig must be silent — see the README's \"Baseline vs incremental digs\" section");
         assert!(
             store.has_completed_baseline("mockvendor").await.unwrap(),
             "baseline must be marked complete after a fully successful run"
         );
-        assert_eq!(store.all_current("mockvendor").await.unwrap().len(), 2, "both entries must still be persisted");
+        assert_eq!(
+            store.all_current("mockvendor").await.unwrap().len(),
+            2,
+            "both entries must still be persisted"
+        );
         assert_eq!(store.run_outcome_kinds(), vec!["success"]);
     }
 
@@ -482,18 +540,33 @@ mod tests {
         // ".../a" regardless of which ref it's answering for — so this
         // only passes if the engine actually overwrites it from `r`
         // (matching vendor/device_family's population, see run_loop).
-        let refs = vec![firmware_ref("https://example.test/a"), firmware_ref("https://example.test/b")];
+        let refs = vec![
+            firmware_ref("https://example.test/a"),
+            firmware_ref("https://example.test/b"),
+        ];
         let mut metadata_by_url = HashMap::new();
-        metadata_by_url.insert("https://example.test/a".to_string(), Ok(metadata("1.0.0", vec![1, 0, 0], 1)));
-        metadata_by_url.insert("https://example.test/b".to_string(), Ok(metadata("2.0.0", vec![2, 0, 0], 2)));
-        let plugin = MockPlugin { refs, metadata_by_url };
+        metadata_by_url.insert(
+            "https://example.test/a".to_string(),
+            Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
+        );
+        metadata_by_url.insert(
+            "https://example.test/b".to_string(),
+            Ok(metadata("2.0.0", vec![2, 0, 0], 2)),
+        );
+        let plugin = MockPlugin {
+            refs,
+            metadata_by_url,
+        };
 
         let store = MockStore::default();
         let (bus, _events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
 
         let all = store.all_current("mockvendor").await.unwrap();
-        let entry_b = all.iter().find(|m| m.version.raw == "2.0.0").expect("entry for version 2.0.0 must exist");
+        let entry_b = all
+            .iter()
+            .find(|m| m.version.raw == "2.0.0")
+            .expect("entry for version 2.0.0 must exist");
         assert_eq!(
             entry_b.source_url.as_str(),
             "https://example.test/b",
@@ -515,7 +588,9 @@ mod tests {
         store.mark_baseline_complete("mockvendor").await.unwrap(); // simulate a prior baseline run
         let (bus, events) = bus_with_collector();
 
-        dig_vendor(&plugin, &ctx(), &store, &bus).await.expect("incremental dig should succeed");
+        dig_vendor(&plugin, &ctx(), &store, &bus)
+            .await
+            .expect("incremental dig should succeed");
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 1);
@@ -529,7 +604,14 @@ mod tests {
     async fn incremental_run_reports_newer_direction_on_a_real_version_bump() {
         let store = MockStore::default();
         let prior_ref = firmware_ref("https://example.test/a");
-        store.upsert(&prior_ref, &metadata("1.0.0", vec![1, 0, 0], 1), Uuid::new_v4()).await.unwrap();
+        store
+            .upsert(
+                &prior_ref,
+                &metadata("1.0.0", vec![1, 0, 0], 1),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
         store.mark_baseline_complete("mockvendor").await.unwrap();
 
         let plugin = MockPlugin {
@@ -544,9 +626,17 @@ mod tests {
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
 
         let events = events.lock().unwrap();
-        assert_eq!(events.len(), 1, "a version bump must produce exactly one event, not both New and Updated");
+        assert_eq!(
+            events.len(),
+            1,
+            "a version bump must produce exactly one event, not both New and Updated"
+        );
         match &events[0] {
-            FirmwareEvent::UpdatedRelease { previous, version_direction, .. } => {
+            FirmwareEvent::UpdatedRelease {
+                previous,
+                version_direction,
+                ..
+            } => {
                 assert_eq!(previous.version.raw, "1.0.0");
                 assert_eq!(*version_direction, VersionDirection::Newer);
             }
@@ -562,7 +652,14 @@ mod tests {
         // explicitly as a meaningfully different signal from a normal bump.
         let store = MockStore::default();
         let prior_ref = firmware_ref("https://example.test/a");
-        store.upsert(&prior_ref, &metadata("2.0.0", vec![2, 0, 0], 1), Uuid::new_v4()).await.unwrap();
+        store
+            .upsert(
+                &prior_ref,
+                &metadata("2.0.0", vec![2, 0, 0], 1),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
         store.mark_baseline_complete("mockvendor").await.unwrap();
 
         let plugin = MockPlugin {
@@ -578,7 +675,9 @@ mod tests {
 
         let events = events.lock().unwrap();
         match &events[0] {
-            FirmwareEvent::UpdatedRelease { version_direction, .. } => {
+            FirmwareEvent::UpdatedRelease {
+                version_direction, ..
+            } => {
                 assert_eq!(*version_direction, VersionDirection::Older);
             }
             other => panic!("expected UpdatedRelease, got {other:?}"),
@@ -599,7 +698,10 @@ mod tests {
         };
         let mut widget_meta = metadata("9.9.9", vec![9, 9, 9], 1);
         widget_meta.device_family = "widget".into();
-        store.upsert(&widget_ref, &widget_meta, Uuid::new_v4()).await.unwrap();
+        store
+            .upsert(&widget_ref, &widget_meta, Uuid::new_v4())
+            .await
+            .unwrap();
         store.mark_baseline_complete("mockvendor").await.unwrap();
 
         let gadget_ref = FirmwareRef {
@@ -613,7 +715,10 @@ mod tests {
 
         let plugin = MockPlugin {
             refs: vec![gadget_ref],
-            metadata_by_url: HashMap::from([("https://example.test/gadget".to_string(), Ok(gadget_meta))]),
+            metadata_by_url: HashMap::from([(
+                "https://example.test/gadget".to_string(),
+                Ok(gadget_meta),
+            )]),
         };
 
         let (bus, events) = bus_with_collector();
@@ -633,7 +738,10 @@ mod tests {
         // simulates a version that was already seen on an earlier dig.
         let prior_ref = firmware_ref("https://example.test/a");
         let prior_meta = metadata("1.0.0", vec![1, 0, 0], 0xAA);
-        store.upsert(&prior_ref, &prior_meta, Uuid::new_v4()).await.unwrap();
+        store
+            .upsert(&prior_ref, &prior_meta, Uuid::new_v4())
+            .await
+            .unwrap();
         store.mark_baseline_complete("mockvendor").await.unwrap();
 
         // Same version string, different hash — e.g. a vendor silently
@@ -641,16 +749,25 @@ mod tests {
         let fresh_meta = metadata("1.0.0", vec![1, 0, 0], 0xBB);
         let plugin = MockPlugin {
             refs: vec![firmware_ref("https://example.test/a")],
-            metadata_by_url: HashMap::from([("https://example.test/a".to_string(), Ok(fresh_meta))]),
+            metadata_by_url: HashMap::from([(
+                "https://example.test/a".to_string(),
+                Ok(fresh_meta),
+            )]),
         };
 
         let (bus, events) = bus_with_collector();
-        dig_vendor(&plugin, &ctx(), &store, &bus).await.expect("incremental dig should succeed");
+        dig_vendor(&plugin, &ctx(), &store, &bus)
+            .await
+            .expect("incremental dig should succeed");
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 1);
         match &events[0] {
-            FirmwareEvent::UpdatedRelease { changed_fields, version_direction, .. } => {
+            FirmwareEvent::UpdatedRelease {
+                changed_fields,
+                version_direction,
+                ..
+            } => {
                 assert!(
                     changed_fields.iter().any(|f| f.field == "sha256"),
                     "hash change must appear in changed_fields even though version string didn't change"
@@ -682,7 +799,10 @@ mod tests {
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
 
-        assert!(events.lock().unwrap().is_empty(), "no diff means no event, even on an incremental run");
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "no diff means no event, even on an incremental run"
+        );
     }
 
     #[tokio::test]
@@ -694,10 +814,19 @@ mod tests {
         // as a baseline, not an incremental run that would notify on
         // everything the failed run didn't get to.
         let plugin = MockPlugin {
-            refs: vec![firmware_ref("https://example.test/a"), firmware_ref("https://example.test/b")],
+            refs: vec![
+                firmware_ref("https://example.test/a"),
+                firmware_ref("https://example.test/b"),
+            ],
             metadata_by_url: HashMap::from([
-                ("https://example.test/a".to_string(), Ok(metadata("1.0.0", vec![1, 0, 0], 1))),
-                ("https://example.test/b".to_string(), Err("simulated vendor site failure".to_string())),
+                (
+                    "https://example.test/a".to_string(),
+                    Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
+                ),
+                (
+                    "https://example.test/b".to_string(),
+                    Err("simulated vendor site failure".to_string()),
+                ),
             ]),
         };
 
@@ -706,12 +835,18 @@ mod tests {
 
         let result = dig_vendor(&plugin, &ctx(), &store, &bus).await;
 
-        assert!(result.is_err(), "the dig as a whole must surface the plugin error");
+        assert!(
+            result.is_err(),
+            "the dig as a whole must surface the plugin error"
+        );
         assert!(
             !store.has_completed_baseline("mockvendor").await.unwrap(),
             "a baseline run that dies mid-scrape must NOT be marked complete — see the README's \"Baseline vs incremental digs\" correctness notes"
         );
-        assert!(events.lock().unwrap().is_empty(), "a failed baseline run must not have published anything either");
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "a failed baseline run must not have published anything either"
+        );
         assert_eq!(
             store.run_outcome_kinds(),
             vec!["failed"],
@@ -741,7 +876,10 @@ mod tests {
 
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
 
-        assert!(events.lock().unwrap().is_empty(), "--redig must make the next dig silent, same as a first-ever dig");
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "--redig must make the next dig silent, same as a first-ever dig"
+        );
         assert!(store.has_completed_baseline("mockvendor").await.unwrap());
     }
 

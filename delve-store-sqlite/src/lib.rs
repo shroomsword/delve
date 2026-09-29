@@ -114,7 +114,9 @@ impl SqliteStore {
     }
 
     fn row_to_metadata(row: &sqlx::sqlite::SqliteRow) -> Result<FirmwareMetadata, StoreError> {
-        let json: String = row.try_get("metadata_json").map_err(|e| StoreError::Backend(e.to_string()))?;
+        let json: String = row
+            .try_get("metadata_json")
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
         serde_json::from_str(&json).map_err(|e| StoreError::Backend(e.to_string()))
     }
 }
@@ -170,14 +172,24 @@ impl MetadataStore for SqliteStore {
         row.as_ref().map(Self::row_to_metadata).transpose()
     }
 
-    async fn upsert(&self, r: &FirmwareRef, meta: &FirmwareMetadata, run_id: Uuid) -> Result<(), StoreError> {
+    async fn upsert(
+        &self,
+        r: &FirmwareRef,
+        meta: &FirmwareMetadata,
+        run_id: Uuid,
+    ) -> Result<(), StoreError> {
         let hw_key = hardware_key(&meta.hardware_targets);
-        let metadata_json = serde_json::to_string(meta).map_err(|e| StoreError::Backend(e.to_string()))?;
+        let metadata_json =
+            serde_json::to_string(meta).map_err(|e| StoreError::Backend(e.to_string()))?;
         let ordinal = Self::encode_ordinal(&meta.version.ordinal);
         let scheme = Self::version_scheme_str(&meta.version.scheme);
         let observed_at = Utc::now();
 
-        let mut tx = self.pool.begin().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
 
         // Revision log — always appended, never overwritten (see the
         // README's "Storage" section).
@@ -229,7 +241,9 @@ impl MetadataStore for SqliteStore {
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
 
-        tx.commit().await.map_err(|e| StoreError::Backend(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
         Ok(())
     }
 
@@ -315,15 +329,19 @@ impl MetadataStore for SqliteStore {
         rows.iter()
             .map(|row| {
                 let metadata = Self::row_to_metadata(row)?;
-                let observed_at: String =
-                    row.try_get("observed_at").map_err(|e| StoreError::Backend(e.to_string()))?;
-                let run_id: String = row.try_get("run_id").map_err(|e| StoreError::Backend(e.to_string()))?;
+                let observed_at: String = row
+                    .try_get("observed_at")
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
+                let run_id: String = row
+                    .try_get("run_id")
+                    .map_err(|e| StoreError::Backend(e.to_string()))?;
                 Ok(FirmwareRevision {
                     metadata,
                     observed_at: chrono::DateTime::parse_from_rfc3339(&observed_at)
                         .map_err(|e| StoreError::Backend(e.to_string()))?
                         .with_timezone(&Utc),
-                    run_id: Uuid::parse_str(&run_id).map_err(|e| StoreError::Backend(e.to_string()))?,
+                    run_id: Uuid::parse_str(&run_id)
+                        .map_err(|e| StoreError::Backend(e.to_string()))?,
                 })
             })
             .collect()
@@ -338,7 +356,10 @@ impl MetadataStore for SqliteStore {
         rows.iter().map(Self::row_to_metadata).collect()
     }
 
-    async fn resolve_one(&self, selector: &FirmwareSelector) -> Result<Option<FirmwareMetadata>, StoreError> {
+    async fn resolve_one(
+        &self,
+        selector: &FirmwareSelector,
+    ) -> Result<Option<FirmwareMetadata>, StoreError> {
         let matches = self.resolve_many(selector).await?;
         match matches.len() {
             0 => Ok(None),
@@ -347,7 +368,10 @@ impl MetadataStore for SqliteStore {
         }
     }
 
-    async fn resolve_many(&self, selector: &FirmwareSelector) -> Result<Vec<FirmwareMetadata>, StoreError> {
+    async fn resolve_many(
+        &self,
+        selector: &FirmwareSelector,
+    ) -> Result<Vec<FirmwareMetadata>, StoreError> {
         // --id short-circuits every other filter — it addresses exactly one
         // row by its surrogate key.
         if let Some(id) = selector.id {
@@ -371,10 +395,12 @@ impl MetadataStore for SqliteStore {
             qb.push(" AND vendor = ").push_bind(vendor.clone());
         }
         if let Some(device_family) = &selector.device_family {
-            qb.push(" AND device_family = ").push_bind(device_family.clone());
+            qb.push(" AND device_family = ")
+                .push_bind(device_family.clone());
         }
         if let Some(hardware) = &selector.hardware {
-            qb.push(" AND hardware_key = ").push_bind(hardware_key(hardware));
+            qb.push(" AND hardware_key = ")
+                .push_bind(hardware_key(hardware));
         }
         if let Some(version) = &selector.version {
             qb.push(" AND version_raw = ").push_bind(version.clone());
@@ -384,7 +410,11 @@ impl MetadataStore for SqliteStore {
         // the --latest pass below relies on that ordering.
         qb.push(" ORDER BY vendor, device_family, hardware_key, version_ordinal DESC");
 
-        let rows = qb.build().fetch_all(&self.pool).await.map_err(|e| StoreError::Backend(e.to_string()))?;
+        let rows = qb
+            .build()
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
 
         if !selector.latest {
             return rows.iter().map(Self::row_to_metadata).collect();
@@ -399,18 +429,25 @@ impl MetadataStore for SqliteStore {
         // We deliberately don't fall back to string or observation-order
         // comparison for those rows; silently guessing a "latest" would be
         // wrong in exactly the cases that section exists to guard against.
-        let mut seen_groups: std::collections::HashSet<(String, String, String)> = std::collections::HashSet::new();
+        let mut seen_groups: std::collections::HashSet<(String, String, String)> =
+            std::collections::HashSet::new();
         let mut result = Vec::new();
         for row in &rows {
-            let ordinal: Option<String> =
-                row.try_get("version_ordinal").map_err(|e| StoreError::Backend(e.to_string()))?;
+            let ordinal: Option<String> = row
+                .try_get("version_ordinal")
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
             if ordinal.is_none() {
                 continue;
             }
-            let vendor: String = row.try_get("vendor").map_err(|e| StoreError::Backend(e.to_string()))?;
-            let device_family: String =
-                row.try_get("device_family").map_err(|e| StoreError::Backend(e.to_string()))?;
-            let hw: String = row.try_get("hardware_key").map_err(|e| StoreError::Backend(e.to_string()))?;
+            let vendor: String = row
+                .try_get("vendor")
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let device_family: String = row
+                .try_get("device_family")
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
+            let hw: String = row
+                .try_get("hardware_key")
+                .map_err(|e| StoreError::Backend(e.to_string()))?;
             if seen_groups.insert((vendor, device_family, hw)) {
                 result.push(Self::row_to_metadata(row)?);
             }
@@ -426,7 +463,9 @@ mod tests {
     use delve_core::store::{FirmwareSelector, RunKind, RunOutcome};
 
     async fn test_store() -> SqliteStore {
-        SqliteStore::open_url("sqlite::memory:").await.expect("in-memory store should open")
+        SqliteStore::open_url("sqlite::memory:")
+            .await
+            .expect("in-memory store should open")
     }
 
     #[tokio::test]
@@ -438,10 +477,17 @@ mod tests {
         // this fails with SQLITE_CANTOPEN ("unable to open database file").
         let dir = std::env::temp_dir().join(format!("delve-test-{}", uuid::Uuid::new_v4()));
         let nested_path = dir.join("nested").join("delve.sqlite");
-        assert!(!nested_path.parent().unwrap().exists(), "test setup: directory must not pre-exist");
+        assert!(
+            !nested_path.parent().unwrap().exists(),
+            "test setup: directory must not pre-exist"
+        );
 
         let store = SqliteStore::open(nested_path.to_str().unwrap()).await;
-        assert!(store.is_ok(), "open() must create missing parent directories, got: {:?}", store.err());
+        assert!(
+            store.is_ok(),
+            "open() must create missing parent directories, got: {:?}",
+            store.err()
+        );
         assert!(nested_path.parent().unwrap().exists());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -473,7 +519,11 @@ mod tests {
             source_url: "https://example.test/fixture".parse().unwrap(),
             version: VersionKey {
                 raw: version.into(),
-                scheme: if ordinal.is_some() { VersionScheme::Semver } else { VersionScheme::Opaque },
+                scheme: if ordinal.is_some() {
+                    VersionScheme::Semver
+                } else {
+                    VersionScheme::Opaque
+                },
                 ordinal,
             },
             release_date: None,
@@ -488,14 +538,30 @@ mod tests {
     async fn upsert_then_lookup_round_trips() {
         let store = test_store().await;
         let r = firmware_ref("acme", "widget", "https://example.test/a");
-        let meta = metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 0xAB);
+        let meta = metadata(
+            "acme",
+            "widget",
+            "1.0.0",
+            Some(vec![1, 0, 0]),
+            &["rev-a"],
+            0xAB,
+        );
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
 
         store.upsert(&r, &meta, run_id).await.unwrap();
 
         let hw = vec!["rev-a".to_string()];
-        let key = FirmwareKey { vendor: "acme", device_family: "widget", hardware_targets: &hw, version_raw: "1.0.0" };
-        let found = store.lookup(&key).await.unwrap().expect("entry should be found");
+        let key = FirmwareKey {
+            vendor: "acme",
+            device_family: "widget",
+            hardware_targets: &hw,
+            version_raw: "1.0.0",
+        };
+        let found = store
+            .lookup(&key)
+            .await
+            .unwrap()
+            .expect("entry should be found");
         assert_eq!(found.version.raw, "1.0.0");
         assert_eq!(found.sha256, Some([0xAB; 32]));
     }
@@ -509,8 +575,17 @@ mod tests {
         // the FirmwareRef's own to make that separation clear here.
         let store = test_store().await;
         let r = firmware_ref("acme", "widget", "https://example.test/discovery-page");
-        let mut meta = metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1);
-        meta.source_url = "https://example.test/actual-firmware-image".parse().unwrap();
+        let mut meta = metadata(
+            "acme",
+            "widget",
+            "1.0.0",
+            Some(vec![1, 0, 0]),
+            &["rev-a"],
+            1,
+        );
+        meta.source_url = "https://example.test/actual-firmware-image"
+            .parse()
+            .unwrap();
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
         store.upsert(&r, &meta, run_id).await.unwrap();
 
@@ -520,15 +595,27 @@ mod tests {
             version: Some("1.0.0".into()),
             ..Default::default()
         };
-        let found = store.resolve_one(&selector).await.unwrap().expect("entry should resolve");
-        assert_eq!(found.source_url.as_str(), "https://example.test/actual-firmware-image");
+        let found = store
+            .resolve_one(&selector)
+            .await
+            .unwrap()
+            .expect("entry should resolve");
+        assert_eq!(
+            found.source_url.as_str(),
+            "https://example.test/actual-firmware-image"
+        );
     }
 
     #[tokio::test]
     async fn lookup_returns_none_for_unknown_entry() {
         let store = test_store().await;
         let hw: Vec<String> = vec![];
-        let key = FirmwareKey { vendor: "nope", device_family: "nope", hardware_targets: &hw, version_raw: "0.0.0" };
+        let key = FirmwareKey {
+            vendor: "nope",
+            device_family: "nope",
+            hardware_targets: &hw,
+            version_raw: "0.0.0",
+        };
         assert!(store.lookup(&key).await.unwrap().is_none());
     }
 
@@ -538,7 +625,18 @@ mod tests {
         let r = firmware_ref("acme", "widget", "https://example.test/a");
         let run1 = store.start_run("acme", RunKind::Baseline).await.unwrap();
         store
-            .upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1), run1)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run1,
+            )
             .await
             .unwrap();
 
@@ -546,17 +644,41 @@ mod tests {
         // Same natural key, different hash — simulates the entry being
         // re-observed with a changed hash under the same version string.
         store
-            .upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 2), run2)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    2,
+                ),
+                run2,
+            )
             .await
             .unwrap();
 
         let hw = vec!["rev-a".to_string()];
-        let key = FirmwareKey { vendor: "acme", device_family: "widget", hardware_targets: &hw, version_raw: "1.0.0" };
+        let key = FirmwareKey {
+            vendor: "acme",
+            device_family: "widget",
+            hardware_targets: &hw,
+            version_raw: "1.0.0",
+        };
         let current = store.lookup(&key).await.unwrap().unwrap();
-        assert_eq!(current.sha256, Some([2u8; 32]), "current row must reflect the latest observation");
+        assert_eq!(
+            current.sha256,
+            Some([2u8; 32]),
+            "current row must reflect the latest observation"
+        );
 
         let history = store.history(&key).await.unwrap();
-        assert_eq!(history.len(), 2, "both observations must be preserved in the revision log, not just the latest");
+        assert_eq!(
+            history.len(),
+            2,
+            "both observations must be preserved in the revision log, not just the latest"
+        );
     }
 
     #[tokio::test]
@@ -568,7 +690,10 @@ mod tests {
         assert!(store.has_completed_baseline("acme").await.unwrap());
 
         store.clear_baseline("acme").await.unwrap();
-        assert!(!store.has_completed_baseline("acme").await.unwrap(), "clear_baseline (backing --redig) must actually unset it");
+        assert!(
+            !store.has_completed_baseline("acme").await.unwrap(),
+            "clear_baseline (backing --redig) must actually unset it"
+        );
     }
 
     #[tokio::test]
@@ -588,7 +713,18 @@ mod tests {
         let r = firmware_ref("acme", "widget", "https://example.test/a");
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
         store
-            .upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1), run_id)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
             .await
             .unwrap();
 
@@ -608,17 +744,42 @@ mod tests {
         let r = firmware_ref("acme", "widget", "https://example.test/a");
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
         store
-            .upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1), run_id)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
             .await
             .unwrap();
         store
-            .upsert(&r, &metadata("acme", "widget", "1.1.0", Some(vec![1, 1, 0]), &["rev-a"], 2), run_id)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.1.0",
+                    Some(vec![1, 1, 0]),
+                    &["rev-a"],
+                    2,
+                ),
+                run_id,
+            )
             .await
             .unwrap();
 
         // No version given — matches both rows just inserted.
-        let selector =
-            FirmwareSelector { vendor: Some("acme".into()), device_family: Some("widget".into()), ..Default::default() };
+        let selector = FirmwareSelector {
+            vendor: Some("acme".into()),
+            device_family: Some("widget".into()),
+            ..Default::default()
+        };
 
         match store.resolve_one(&selector).await {
             Err(StoreError::Ambiguous(n)) => assert_eq!(n, 2),
@@ -629,7 +790,10 @@ mod tests {
     #[tokio::test]
     async fn resolve_one_returns_none_for_no_match() {
         let store = test_store().await;
-        let selector = FirmwareSelector { vendor: Some("nobody".into()), ..Default::default() };
+        let selector = FirmwareSelector {
+            vendor: Some("nobody".into()),
+            ..Default::default()
+        };
         assert!(store.resolve_one(&selector).await.unwrap().is_none());
     }
 
@@ -639,11 +803,33 @@ mod tests {
         let r = firmware_ref("acme", "widget", "https://example.test/a");
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
         store
-            .upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1), run_id)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
             .await
             .unwrap();
         store
-            .upsert(&r, &metadata("acme", "widget", "1.0.0-revb", Some(vec![1, 0, 0]), &["rev-b"], 2), run_id)
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0-revb",
+                    Some(vec![1, 0, 0]),
+                    &["rev-b"],
+                    2,
+                ),
+                run_id,
+            )
             .await
             .unwrap();
 
@@ -663,9 +849,51 @@ mod tests {
         let store = test_store().await;
         let r = firmware_ref("acme", "widget", "https://example.test/a");
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
-        store.upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1), run_id).await.unwrap();
-        store.upsert(&r, &metadata("acme", "widget", "1.10.0", Some(vec![1, 10, 0]), &["rev-a"], 2), run_id).await.unwrap();
-        store.upsert(&r, &metadata("acme", "widget", "1.2.0", Some(vec![1, 2, 0]), &["rev-a"], 3), run_id).await.unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.10.0",
+                    Some(vec![1, 10, 0]),
+                    &["rev-a"],
+                    2,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.2.0",
+                    Some(vec![1, 2, 0]),
+                    &["rev-a"],
+                    3,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
 
         let selector = FirmwareSelector {
             vendor: Some("acme".into()),
@@ -674,7 +902,11 @@ mod tests {
             ..Default::default()
         };
         let matches = store.resolve_many(&selector).await.unwrap();
-        assert_eq!(matches.len(), 1, "one group must resolve to exactly one latest entry");
+        assert_eq!(
+            matches.len(),
+            1,
+            "one group must resolve to exactly one latest entry"
+        );
         assert_eq!(
             matches[0].version.raw, "1.10.0",
             "1.10.0 must beat 1.2.0 by numeric ordinal, not lexicographic string order"
@@ -687,7 +919,14 @@ mod tests {
         let r = firmware_ref("acme", "widget", "https://example.test/a");
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
         // Opaque scheme, no ordinal — a --latest resolution can't be trusted here.
-        store.upsert(&r, &metadata("acme", "widget", "build-x", None, &["rev-a"], 1), run_id).await.unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata("acme", "widget", "build-x", None, &["rev-a"], 1),
+                run_id,
+            )
+            .await
+            .unwrap();
 
         let selector = FirmwareSelector {
             vendor: Some("acme".into()),
@@ -696,7 +935,10 @@ mod tests {
             ..Default::default()
         };
         let matches = store.resolve_many(&selector).await.unwrap();
-        assert!(matches.is_empty(), "a group with no derivable ordinal must not resolve --latest by guessing");
+        assert!(
+            matches.is_empty(),
+            "a group with no derivable ordinal must not resolve --latest by guessing"
+        );
     }
 
     #[tokio::test]
@@ -706,16 +948,80 @@ mod tests {
         let r_widget = firmware_ref("acme", "widget", "https://example.test/a");
         let r_gadget = firmware_ref("acme", "gadget", "https://example.test/b");
 
-        store.upsert(&r_widget, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1), run_id).await.unwrap();
-        store.upsert(&r_widget, &metadata("acme", "widget", "2.0.0", Some(vec![2, 0, 0]), &["rev-a"], 2), run_id).await.unwrap();
-        store.upsert(&r_gadget, &metadata("acme", "gadget", "3.0.0", Some(vec![3, 0, 0]), &["rev-x"], 3), run_id).await.unwrap();
-        store.upsert(&r_gadget, &metadata("acme", "gadget", "3.5.0", Some(vec![3, 5, 0]), &["rev-x"], 4), run_id).await.unwrap();
+        store
+            .upsert(
+                &r_widget,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                &r_widget,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "2.0.0",
+                    Some(vec![2, 0, 0]),
+                    &["rev-a"],
+                    2,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                &r_gadget,
+                &metadata(
+                    "acme",
+                    "gadget",
+                    "3.0.0",
+                    Some(vec![3, 0, 0]),
+                    &["rev-x"],
+                    3,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                &r_gadget,
+                &metadata(
+                    "acme",
+                    "gadget",
+                    "3.5.0",
+                    Some(vec![3, 5, 0]),
+                    &["rev-x"],
+                    4,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
 
-        let selector = FirmwareSelector { vendor: Some("acme".into()), latest: true, ..Default::default() };
+        let selector = FirmwareSelector {
+            vendor: Some("acme".into()),
+            latest: true,
+            ..Default::default()
+        };
         let mut matches = store.resolve_many(&selector).await.unwrap();
         matches.sort_by(|a, b| a.device_family.cmp(&b.device_family));
 
-        assert_eq!(matches.len(), 2, "two independent device families must each get their own latest entry");
+        assert_eq!(
+            matches.len(),
+            2,
+            "two independent device families must each get their own latest entry"
+        );
         assert_eq!(matches[0].version.raw, "3.5.0"); // gadget
         assert_eq!(matches[1].version.raw, "2.0.0"); // widget
     }
@@ -727,7 +1033,10 @@ mod tests {
         // Mainly guards against complete_run erroring on a run_id that
         // start_run just returned, and against a foreign-key mismatch
         // between runs and firmware_revisions/firmware_current.
-        store.complete_run(run_id, RunOutcome::Success).await.unwrap();
+        store
+            .complete_run(run_id, RunOutcome::Success)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -737,7 +1046,14 @@ mod tests {
         store
             .upsert(
                 &firmware_ref("acme", "widget", "https://example.test/a"),
-                &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 1),
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
                 run_id,
             )
             .await
@@ -745,7 +1061,14 @@ mod tests {
         store
             .upsert(
                 &firmware_ref("other-vendor", "widget", "https://example.test/b"),
-                &metadata("other-vendor", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 2),
+                &metadata(
+                    "other-vendor",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    2,
+                ),
                 run_id,
             )
             .await
@@ -763,17 +1086,51 @@ mod tests {
         let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
         // Insert a high version first, then a lower one — latest_known must
         // still report the high one, i.e. it isn't just "most recent row".
-        store.upsert(&r, &metadata("acme", "widget", "5.0.0", Some(vec![5, 0, 0]), &["rev-a"], 1), run_id).await.unwrap();
-        store.upsert(&r, &metadata("acme", "widget", "1.0.0", Some(vec![1, 0, 0]), &["rev-a"], 2), run_id).await.unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "5.0.0",
+                    Some(vec![5, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    2,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
 
-        let found = store.latest_known("acme", "widget", &["rev-a".to_string()]).await.unwrap();
+        let found = store
+            .latest_known("acme", "widget", &["rev-a".to_string()])
+            .await
+            .unwrap();
         assert_eq!(found.unwrap().version.raw, "5.0.0");
     }
 
     #[tokio::test]
     async fn latest_known_returns_none_for_a_line_with_no_entries_yet() {
         let store = test_store().await;
-        let found = store.latest_known("acme", "widget", &["rev-a".to_string()]).await.unwrap();
+        let found = store
+            .latest_known("acme", "widget", &["rev-a".to_string()])
+            .await
+            .unwrap();
         assert!(found.is_none());
     }
 
@@ -784,7 +1141,14 @@ mod tests {
         store
             .upsert(
                 &firmware_ref("acme", "widget", "https://example.test/a"),
-                &metadata("acme", "widget", "9.0.0", Some(vec![9, 0, 0]), &["rev-a"], 1),
+                &metadata(
+                    "acme",
+                    "widget",
+                    "9.0.0",
+                    Some(vec![9, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
                 run_id,
             )
             .await
@@ -792,11 +1156,23 @@ mod tests {
 
         // Different device family — must not be picked up as "the latest"
         // for "gadget", which has no entries of its own yet.
-        let found = store.latest_known("acme", "gadget", &["rev-a".to_string()]).await.unwrap();
-        assert!(found.is_none(), "latest_known must not leak across device families");
+        let found = store
+            .latest_known("acme", "gadget", &["rev-a".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            found.is_none(),
+            "latest_known must not leak across device families"
+        );
 
         // Different hardware target on the same device family — same story.
-        let found = store.latest_known("acme", "widget", &["rev-b".to_string()]).await.unwrap();
-        assert!(found.is_none(), "latest_known must not leak across hardware targets");
+        let found = store
+            .latest_known("acme", "widget", &["rev-b".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            found.is_none(),
+            "latest_known must not leak across hardware targets"
+        );
     }
 }

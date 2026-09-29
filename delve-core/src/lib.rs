@@ -26,9 +26,11 @@ pub mod prelude {
         VersionScheme,
     };
     pub use crate::plugin::{
-        ArtifactSink, PluginCapabilities, PluginDescriptor, PluginError, PluginRegistry, VendorPlugin,
+        ArtifactSink, PluginCapabilities, PluginDescriptor, PluginError, PluginRegistry,
+        VendorPlugin,
     };
     pub use crate::store::{
-        FirmwareKey, FirmwareRevision, FirmwareSelector, MetadataStore, RunKind, RunOutcome, StoreError,
+        FirmwareKey, FirmwareRevision, FirmwareSelector, MetadataStore, RunKind, RunOutcome,
+        StoreError,
     };
 }

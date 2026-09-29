@@ -60,7 +60,11 @@ pub trait VendorPlugin: Send + Sync {
 
     /// Pull metadata (version, hash, release notes, hardware targets)
     /// without downloading the full image where the source allows it.
-    async fn metadata(&self, ctx: &ScrapeContext, r: &FirmwareRef) -> Result<FirmwareMetadata, PluginError>;
+    async fn metadata(
+        &self,
+        ctx: &ScrapeContext,
+        r: &FirmwareRef,
+    ) -> Result<FirmwareMetadata, PluginError>;
 
     /// Download and optionally verify the artifact. Only ever called from
     /// the manual `unearth` CLI command — never invoked during a scheduled

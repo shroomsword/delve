@@ -26,8 +26,13 @@ impl WebhookSubscriber {
 #[derive(Serialize)]
 #[serde(tag = "kind")]
 enum WebhookPayload<'a> {
-    NewRelease { version: &'a str },
-    UpdatedRelease { version: &'a str, previous_version: &'a str },
+    NewRelease {
+        version: &'a str,
+    },
+    UpdatedRelease {
+        version: &'a str,
+        previous_version: &'a str,
+    },
 }
 
 impl<'a> From<&'a FirmwareEvent> for WebhookPayload<'a> {
@@ -36,7 +41,9 @@ impl<'a> From<&'a FirmwareEvent> for WebhookPayload<'a> {
             FirmwareEvent::NewRelease { firmware, .. } => WebhookPayload::NewRelease {
                 version: &firmware.version.raw,
             },
-            FirmwareEvent::UpdatedRelease { firmware, previous, .. } => WebhookPayload::UpdatedRelease {
+            FirmwareEvent::UpdatedRelease {
+                firmware, previous, ..
+            } => WebhookPayload::UpdatedRelease {
                 version: &firmware.version.raw,
                 previous_version: &previous.version.raw,
             },

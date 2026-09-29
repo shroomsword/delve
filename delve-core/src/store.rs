@@ -135,7 +135,12 @@ pub trait MetadataStore: Send + Sync {
         hardware_targets: &[String],
     ) -> Result<Option<FirmwareMetadata>, StoreError>;
 
-    async fn upsert(&self, r: &FirmwareRef, meta: &FirmwareMetadata, run_id: Uuid) -> Result<(), StoreError>;
+    async fn upsert(
+        &self,
+        r: &FirmwareRef,
+        meta: &FirmwareMetadata,
+        run_id: Uuid,
+    ) -> Result<(), StoreError>;
 
     // --- baseline tracking, per vendor ---
     async fn has_completed_baseline(&self, vendor_id: &str) -> Result<bool, StoreError>;
@@ -158,6 +163,12 @@ pub trait MetadataStore: Send + Sync {
     async fn all_current(&self, vendor_id: &str) -> Result<Vec<FirmwareMetadata>, StoreError>;
 
     // --- CLI addressing (catalog / unearth / provenance) ---
-    async fn resolve_one(&self, selector: &FirmwareSelector) -> Result<Option<FirmwareMetadata>, StoreError>;
-    async fn resolve_many(&self, selector: &FirmwareSelector) -> Result<Vec<FirmwareMetadata>, StoreError>;
+    async fn resolve_one(
+        &self,
+        selector: &FirmwareSelector,
+    ) -> Result<Option<FirmwareMetadata>, StoreError>;
+    async fn resolve_many(
+        &self,
+        selector: &FirmwareSelector,
+    ) -> Result<Vec<FirmwareMetadata>, StoreError>;
 }

@@ -23,6 +23,11 @@ pub struct FieldDiff {
     pub after: String,
 }
 
+// `UpdatedRelease` carries two full `FirmwareMetadata`s, so it is much larger
+// than `NewRelease`. Events are published a handful at a time per dig, so the
+// wasted space doesn't matter, and boxing the fields would make every
+// subscriber and constructor more awkward for no real gain.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum FirmwareEvent {
     NewRelease {

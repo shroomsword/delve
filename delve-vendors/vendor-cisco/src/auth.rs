@@ -62,7 +62,9 @@ pub struct TokenCache {
 
 impl TokenCache {
     pub fn new() -> Self {
-        Self { cached: Mutex::new(None) }
+        Self {
+            cached: Mutex::new(None),
+        }
     }
 
     /// Returns a valid access token, authenticating (or re-authenticating)
@@ -102,10 +104,9 @@ impl TokenCache {
             )));
         }
 
-        let token: TokenResponse = response
-            .json()
-            .await
-            .map_err(|e| PluginError::Parse(format!("failed to parse Cisco OAuth2 token response: {e}")))?;
+        let token: TokenResponse = response.json().await.map_err(|e| {
+            PluginError::Parse(format!("failed to parse Cisco OAuth2 token response: {e}"))
+        })?;
 
         self.store_token(token.access_token.clone(), token.expires_in, Instant::now());
         Ok(token.access_token)
@@ -115,7 +116,10 @@ impl TokenCache {
     /// testable without any HTTP involved.
     fn cached_token_if_valid(&self, now: Instant) -> Option<String> {
         let guard = self.cached.lock().unwrap();
-        guard.as_ref().filter(|t| t.expires_at > now).map(|t| t.access_token.clone())
+        guard
+            .as_ref()
+            .filter(|t| t.expires_at > now)
+            .map(|t| t.access_token.clone())
     }
 
     /// Renews a little early rather than exactly at expiry, so a request
@@ -128,7 +132,10 @@ impl TokenCache {
         let expires_at = now + ttl;
 
         let mut guard = self.cached.lock().unwrap();
-        *guard = Some(CachedToken { access_token, expires_at });
+        *guard = Some(CachedToken {
+            access_token,
+            expires_at,
+        });
     }
 }
 
@@ -147,7 +154,10 @@ mod tests {
         let cache = TokenCache::new();
         let now = Instant::now();
         cache.store_token("tok-123".to_string(), 3600, now);
-        assert_eq!(cache.cached_token_if_valid(now), Some("tok-123".to_string()));
+        assert_eq!(
+            cache.cached_token_if_valid(now),
+            Some("tok-123".to_string())
+        );
     }
 
     #[test]
@@ -156,7 +166,10 @@ mod tests {
         let now = Instant::now();
         cache.store_token("tok-123".to_string(), 3600, now);
         let five_minutes_later = now + Duration::from_secs(300);
-        assert_eq!(cache.cached_token_if_valid(five_minutes_later), Some("tok-123".to_string()));
+        assert_eq!(
+            cache.cached_token_if_valid(five_minutes_later),
+            Some("tok-123".to_string())
+        );
     }
 
     #[test]
@@ -195,7 +208,11 @@ mod tests {
         let cache = TokenCache::new();
         let now = Instant::now();
         cache.store_token("tok-123".to_string(), 2, now);
-        assert_eq!(cache.cached_token_if_valid(now), None, "a TTL shorter than the safety margin must saturate to already-expired");
+        assert_eq!(
+            cache.cached_token_if_valid(now),
+            None,
+            "a TTL shorter than the safety margin must saturate to already-expired"
+        );
     }
 
     #[test]
@@ -204,6 +221,9 @@ mod tests {
         let now = Instant::now();
         cache.store_token("tok-old".to_string(), 3600, now);
         cache.store_token("tok-new".to_string(), 3600, now);
-        assert_eq!(cache.cached_token_if_valid(now), Some("tok-new".to_string()));
+        assert_eq!(
+            cache.cached_token_if_valid(now),
+            Some("tok-new".to_string())
+        );
     }
 }
