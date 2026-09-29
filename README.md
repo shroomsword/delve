@@ -961,13 +961,20 @@ exists because of it, not as a design decision made up front.
   a ~500 KB image with an empty cache (as `unearth` does) and checks it
   against the published SHA-256.
 
-Not yet covered: the rest of `delve-cli`'s command handlers (`dig.rs`,
-`catalog.rs`, `provenance.rs`) — these are thin enough to mostly be
-integration-tested once a real vendor plugin exists to drive them against,
-rather than mocked at the unit level. `unearth.rs`'s `FileSink` was worth
-testing directly since it's real, non-trivial logic (streaming hash state)
-independent of any vendor plugin; the rest of that file (resolution,
-context building) is mostly wiring. `vendor-cisco`'s actual HTTP
+- **`delve-cli/src/commands/{dig,catalog,provenance}.rs`**: each command
+  driven end to end against the real engine and an in-memory
+  `SqliteStore`, with mock vendor plugins (`commands/test_support.rs`)
+  whose releases change between digs, so nothing touches the network.
+  `dig`: the silent baseline, `NewRelease`/`UpdatedRelease` (version bump
+  and same-version rebuild), `--redig`, skipping vendors without
+  `tos_reviewed`, `--vendor` and `[vendors].enabled` narrowing, and
+  unknown/no-vendor errors. `catalog`: the default table and `--long`
+  output, each selector flag, and `--latest` ordering numerically.
+  `provenance`: one line per observation in order, and ambiguous or
+  unmatched selectors failing.
+
+Not yet covered: `unearth.rs` beyond `FileSink` (resolution, context
+building), which is mostly wiring. `vendor-cisco`'s actual HTTP
 integration (the `discover`/`metadata` methods themselves, end to end)
 isn't tested at all — only the pieces factored out to be testable without
 a live Cisco endpoint are; the untested glue between them is exactly the

@@ -30,8 +30,12 @@ async fn main() -> anyhow::Result<()> {
         Command::Dig { vendor, redig } => {
             commands::dig::run(&config, &registry, &store, vendor, redig).await
         }
-        Command::Catalog { selector, long } => commands::catalog::run(&store, selector, long).await,
-        Command::Provenance { selector } => commands::provenance::run(&store, selector).await,
+        Command::Catalog { selector, long } => {
+            commands::catalog::run(&store, selector, long, &mut std::io::stdout().lock()).await
+        }
+        Command::Provenance { selector } => {
+            commands::provenance::run(&store, selector, &mut std::io::stdout().lock()).await
+        }
         Command::Unearth {
             selector,
             out,

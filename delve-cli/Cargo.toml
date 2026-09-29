@@ -34,3 +34,7 @@ vendor-cisco = ["dep:vendor-cisco"]
 vendor-unifi = ["dep:vendor-unifi"]
 subscriber-webhook = ["dep:subscriber-webhook"]
 all-vendors = ["vendor-cisco", "vendor-unifi"]
+
+[dev-dependencies]
+async-trait.workspace = true
+url.workspace = true

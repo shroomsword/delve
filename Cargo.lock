@@ -336,6 +336,7 @@ name = "delve-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "delve-core",
@@ -349,6 +350,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "vendor-cisco",
  "vendor-unifi",

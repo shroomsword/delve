@@ -15,10 +15,6 @@ pub async fn run(
     vendor_filter: Option<String>,
     redig: bool,
 ) -> anyhow::Result<()> {
-    let (default_transport, transport_overrides) = config.transport.resolve()?;
-    let http_config = config.transport.http_client_config();
-    let (default_rate_limit, rate_limit_overrides) = config.transport.rate_limits();
-
     // Always-on log subscriber (see the README's "Notifications" section)
     // plus whatever's configured. Webhook is
     // feature-gated in Cargo.toml and only constructed if the feature is
@@ -42,6 +38,23 @@ pub async fn run(
         }
     }
     let bus = EventBus::new(subscribers);
+
+    dig_vendors(config, registry, store, &bus, vendor_filter, redig).await
+}
+
+/// Everything `run` does after building the event bus — split out so tests
+/// can drive a real dig with their own subscribers.
+pub async fn dig_vendors(
+    config: &Config,
+    registry: &PluginRegistry,
+    store: &dyn MetadataStore,
+    bus: &EventBus,
+    vendor_filter: Option<String>,
+    redig: bool,
+) -> anyhow::Result<()> {
+    let (default_transport, transport_overrides) = config.transport.resolve()?;
+    let http_config = config.transport.http_client_config();
+    let (default_rate_limit, rate_limit_overrides) = config.transport.rate_limits();
 
     let vendor_ids: Vec<&str> = match &vendor_filter {
         Some(v) => vec![v.as_str()],
@@ -89,10 +102,208 @@ pub async fn run(
         )?;
 
         tracing::info!(vendor = vendor_id, "starting dig");
-        if let Err(e) = delve_core::engine::dig_vendor(plugin, &ctx, store, &bus).await {
+        if let Err(e) = delve_core::engine::dig_vendor(plugin, &ctx, store, bus).await {
             tracing::error!(vendor = vendor_id, error = %e, "dig failed");
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::*;
+    use delve_core::prelude::*;
+
+    fn registry(plugins: Vec<MockPlugin>) -> PluginRegistry {
+        PluginRegistry::from_plugins(
+            plugins
+                .into_iter()
+                .map(|p| Box::new(p) as Box<dyn VendorPlugin>)
+                .collect(),
+        )
+    }
+
+    async fn dig(
+        registry: &PluginRegistry,
+        store: &dyn MetadataStore,
+        subscriber: &RecordingSubscriber,
+        vendor: Option<&str>,
+        redig: bool,
+    ) -> anyhow::Result<()> {
+        dig_vendors(
+            &config(""),
+            registry,
+            store,
+            &subscriber.bus(),
+            vendor.map(String::from),
+            redig,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn first_dig_is_a_silent_baseline_then_later_digs_notify() {
+        let store = memory_store().await;
+        let plugin = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let releases = plugin.releases.clone();
+        let registry = registry(vec![plugin]);
+        let sub = RecordingSubscriber::default();
+
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+        assert!(sub.take().is_empty(), "a baseline dig must not notify");
+        assert!(store.has_completed_baseline("acme").await.unwrap());
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 1);
+
+        // Nothing changed: an incremental dig with no news is silent too.
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+        assert!(sub.take().is_empty());
+
+        // A version bump on a known line, and a brand-new line.
+        releases.lock().unwrap().extend([
+            release("widget", "1.1", &[1, 1], 2),
+            release("gadget", "0.1", &[0, 1], 3),
+        ]);
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+
+        let mut events = sub.take();
+        events.sort_by_key(|e| match e {
+            FirmwareEvent::NewRelease { firmware, .. } => firmware.device_family.clone(),
+            FirmwareEvent::UpdatedRelease { firmware, .. } => firmware.device_family.clone(),
+        });
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            FirmwareEvent::NewRelease { firmware, .. } => {
+                assert_eq!(firmware.device_family, "gadget")
+            }
+            other => panic!("expected NewRelease for gadget, got {other:?}"),
+        }
+        match &events[1] {
+            FirmwareEvent::UpdatedRelease {
+                firmware,
+                previous,
+                version_direction,
+                ..
+            } => {
+                assert_eq!(previous.version.raw, "1.0");
+                assert_eq!(firmware.version.raw, "1.1");
+                assert_eq!(*version_direction, VersionDirection::Newer);
+            }
+            other => panic!("expected UpdatedRelease for widget, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rebuilt_release_under_the_same_version_notifies() {
+        let store = memory_store().await;
+        let plugin = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let releases = plugin.releases.clone();
+        let registry = registry(vec![plugin]);
+        let sub = RecordingSubscriber::default();
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+
+        releases.lock().unwrap()[0].sha = 9;
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+
+        let events = sub.take();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            FirmwareEvent::UpdatedRelease {
+                changed_fields,
+                version_direction,
+                ..
+            } => {
+                assert!(changed_fields.iter().any(|d| d.field == "sha256"));
+                assert_eq!(*version_direction, VersionDirection::Unordered);
+            }
+            other => panic!("expected UpdatedRelease, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn redig_stores_new_releases_without_notifying() {
+        let store = memory_store().await;
+        let plugin = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let releases = plugin.releases.clone();
+        let registry = registry(vec![plugin]);
+        let sub = RecordingSubscriber::default();
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+
+        releases
+            .lock()
+            .unwrap()
+            .push(release("widget", "2.0", &[2, 0], 2));
+        dig(&registry, &store, &sub, Some("acme"), true)
+            .await
+            .unwrap();
+
+        assert!(sub.take().is_empty(), "--redig must behave like a baseline");
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 2);
+        assert!(store.has_completed_baseline("acme").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn vendors_without_tos_review_are_skipped() {
+        let store = memory_store().await;
+        let mut unreviewed = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        unreviewed.tos_reviewed = false;
+        let registry = registry(vec![unreviewed]);
+        let sub = RecordingSubscriber::default();
+
+        // Skipped both when digging everything and when named explicitly.
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+        dig(&registry, &store, &sub, Some("acme"), false)
+            .await
+            .unwrap();
+
+        assert!(store.all_current("acme").await.unwrap().is_empty());
+        assert!(!store.has_completed_baseline("acme").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn vendor_filter_and_enabled_list_narrow_which_vendors_dig() {
+        let registry = registry(vec![
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+            MockPlugin::new("globex", vec![release("sprocket", "1.0", &[1, 0], 2)]),
+        ]);
+        let sub = RecordingSubscriber::default();
+
+        let store = memory_store().await;
+        dig(&registry, &store, &sub, Some("globex"), false)
+            .await
+            .unwrap();
+        assert!(store.all_current("acme").await.unwrap().is_empty());
+        assert_eq!(store.all_current("globex").await.unwrap().len(), 1);
+
+        let store = memory_store().await;
+        let narrowed = config("[vendors]\nenabled = [\"acme\"]");
+        dig_vendors(&narrowed, &registry, &store, &sub.bus(), None, false)
+            .await
+            .unwrap();
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 1);
+        assert!(store.all_current("globex").await.unwrap().is_empty());
+
+        let store = memory_store().await;
+        dig(&registry, &store, &sub, None, false).await.unwrap();
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 1);
+        assert_eq!(store.all_current("globex").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_vendor_and_no_vendors_are_errors() {
+        let store = memory_store().await;
+        let sub = RecordingSubscriber::default();
+
+        let err = dig(&registry(vec![]), &store, &sub, None, false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no vendors enabled"), "{err}");
+
+        let registry = registry(vec![MockPlugin::new("acme", vec![])]);
+        let err = dig(&registry, &store, &sub, Some("nope"), false)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown vendor: nope"), "{err}");
+    }
 }
