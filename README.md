@@ -1,5 +1,7 @@
 # delve
 
+[![CI](https://github.com/shroomsword/delve/actions/workflows/ci.yml/badge.svg?branch=initial-development)](https://github.com/shroomsword/delve/actions/workflows/ci.yml?query=branch%3Ainitial-development)
+
 An embedded firmware scraper and notification framework. `delve` discovers
 firmware releases across embedded device vendors, tracks their metadata
 over time, and notifies configured subscribers when something new or
@@ -8,9 +10,12 @@ built-in knowledge of any specific vendor's portal, API, or firmware
 format.
 
 **Status: early development.** The workspace builds against real
-crates.io dependencies, and CI runs `rustfmt`, `clippy`, the test suite,
-and debug and release builds on every push, with all features enabled
-and the lockfile enforced (`--locked`).
+crates.io dependencies, and CI runs `rustfmt`, `clippy`, a RustSec
+advisory check, the test suite, release builds and a warning-free
+`cargo doc` on every pull request and every push to `initial-development`,
+with all features enabled and the lockfile enforced (`--locked`). Tests
+and builds cover Linux x86_64, macOS (Apple Silicon and Intel) and
+Windows x86_64; on Intel macOS the tests are compiled but not run.
 
 - **`vendor-unifi` works end to end.** Its `discover`, `metadata` and
   `fetch` work against Ubiquiti's firmware update API, confirmed by live
