@@ -112,6 +112,15 @@ impl PluginRegistry {
         Self { plugins }
     }
 
+    /// Build a registry from explicit plugin instances instead of the
+    /// `inventory` link-time registry — lets tests drive the CLI's
+    /// registry-based code paths with mock plugins.
+    pub fn from_plugins(plugins: Vec<Box<dyn VendorPlugin>>) -> Self {
+        Self {
+            plugins: plugins.into_iter().map(|p| (p.vendor_id(), p)).collect(),
+        }
+    }
+
     pub fn get(&self, vendor_id: &str) -> Option<&dyn VendorPlugin> {
         self.plugins.get(vendor_id).map(|b| b.as_ref())
     }
