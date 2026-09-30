@@ -176,6 +176,21 @@ impl RateLimiter {
 /// whatever keys it needs.
 pub type Credentials = HashMap<String, String>;
 
+/// Per-vendor, non-secret plugin settings from `[vendors.settings.<vendor>]`
+/// — e.g. which models `vendor-unifi` should track. Untyped for the same
+/// reason as `Credentials`: only the plugin knows which keys it reads, and
+/// each plugin documents its own.
+pub type Settings = HashMap<String, SettingValue>;
+
+/// A setting is either one string or a list of strings; plugins that need
+/// numbers or booleans parse them from the string themselves.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum SettingValue {
+    Text(String),
+    List(Vec<String>),
+}
+
 /// Shared state handed to every plugin call: HTTP client (already
 /// configured for whatever transport this vendor/run uses, with a real
 /// User-Agent and timeouts applied), resolved credentials for this vendor,
@@ -185,6 +200,7 @@ pub struct ScrapeContext {
     transport: Transport,
     client: reqwest::Client,
     credentials: Credentials,
+    settings: Settings,
     rate_limiter: RateLimiter,
 }
 
@@ -200,8 +216,15 @@ impl ScrapeContext {
             transport,
             client,
             credentials,
+            settings: Settings::new(),
             rate_limiter: RateLimiter::new(rate_limit),
         })
+    }
+
+    /// Attach this vendor's `[vendors.settings.<vendor>]` table.
+    pub fn with_settings(mut self, settings: Settings) -> Self {
+        self.settings = settings;
+        self
     }
 
     pub fn http_client(&self) -> &reqwest::Client {
@@ -228,6 +251,24 @@ impl ScrapeContext {
                 "missing required credential '{key}' — set it under [vendors.credentials.<vendor>] in your config"
             ))
         })
+    }
+
+    /// Look up a plugin setting by key, if this vendor has one configured.
+    pub fn setting(&self, key: &str) -> Option<&SettingValue> {
+        self.settings.get(key)
+    }
+
+    /// A setting that must be a list of strings, if it's set at all. A
+    /// single string where a list is expected fails with a clear
+    /// `PluginError` rather than being guessed at (e.g. split on commas).
+    pub fn setting_list(&self, key: &str) -> Result<Option<&[String]>, PluginError> {
+        match self.settings.get(key) {
+            None => Ok(None),
+            Some(SettingValue::List(values)) => Ok(Some(values)),
+            Some(SettingValue::Text(_)) => Err(PluginError::Rejected(format!(
+                "setting '{key}' must be a list, e.g. {key} = [\"a\", \"b\"] under [vendors.settings.<vendor>]"
+            ))),
+        }
     }
 
     /// Call this immediately before every outgoing HTTP request to a
@@ -310,8 +351,8 @@ pub fn resolve_rate_limit(
 /// README's "Transport and proxying" per-vendor override model; the CLI's
 /// `dig` command calls this once per
 /// vendor before invoking `discover`/`metadata`. `http` is the same for
-/// every vendor in a run — only `transport`/`rate_limit`/`credentials` vary
-/// per vendor.
+/// every vendor in a run — only `transport`/`rate_limit`/`credentials`/
+/// `settings` vary per vendor.
 #[allow(clippy::too_many_arguments)]
 pub fn context_for_vendor(
     default_transport: &Transport,
@@ -320,16 +361,15 @@ pub fn context_for_vendor(
     rate_limit_overrides: &RateLimitOverrides,
     vendor_id: &str,
     credentials: Credentials,
+    settings: Settings,
     http: &HttpClientConfig,
 ) -> Result<Arc<ScrapeContext>, TransportError> {
     let transport = resolve_transport(default_transport, transport_overrides, vendor_id);
     let rate_limit = resolve_rate_limit(default_rate_limit, rate_limit_overrides, vendor_id);
-    Ok(Arc::new(ScrapeContext::new(
-        transport,
-        credentials,
-        http.clone(),
-        rate_limit,
-    )?))
+    Ok(Arc::new(
+        ScrapeContext::new(transport, credentials, http.clone(), rate_limit)?
+            .with_settings(settings),
+    ))
 }
 
 #[cfg(test)]
@@ -418,6 +458,88 @@ mod tests {
             result.is_ok(),
             "a well-formed HttpClientConfig must not fail client construction"
         );
+    }
+
+    #[test]
+    fn setting_list_reads_lists_and_rejects_a_single_string() {
+        let ctx = ctx_with(Credentials::new()).with_settings(Settings::from([
+            (
+                "models".to_string(),
+                SettingValue::List(vec!["U7PG2".into(), "USMINI".into()]),
+            ),
+            ("channel".to_string(), SettingValue::Text("release".into())),
+        ]));
+
+        assert_eq!(
+            ctx.setting_list("models").unwrap(),
+            Some(&["U7PG2".to_string(), "USMINI".to_string()][..])
+        );
+        assert_eq!(ctx.setting_list("unset").unwrap(), None);
+        assert_eq!(
+            ctx.setting("channel"),
+            Some(&SettingValue::Text("release".into()))
+        );
+
+        let err = ctx.setting_list("channel").unwrap_err().to_string();
+        assert!(err.contains("setting 'channel' must be a list"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn http_client_requests_and_decodes_gzip() {
+        use std::io::{BufRead, BufReader, Write};
+
+        // gzip of b"delve gzip ok" (mtime 0), so no compression crate is
+        // needed just for this test.
+        const BODY: [u8; 33] = [
+            31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 75, 73, 205, 41, 75, 85, 72, 175, 202, 44, 80, 200,
+            207, 6, 0, 251, 218, 41, 36, 13, 0, 0, 0,
+        ];
+
+        // A one-shot HTTP server on a plain thread, which hands back the
+        // request's Accept-Encoding header.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut accept_encoding = None;
+            for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("accept-encoding") {
+                        accept_encoding = Some(value.trim().to_string());
+                    }
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                BODY.len()
+            )
+            .unwrap();
+            stream.write_all(&BODY).unwrap();
+            accept_encoding
+        });
+
+        let ctx = ctx_with(Credentials::new());
+        let body = ctx
+            .http_client()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+
+        let accept_encoding = server.join().unwrap().unwrap_or_default();
+        assert!(
+            accept_encoding.contains("gzip"),
+            "client must ask for gzip (reqwest's `gzip` feature); sent {accept_encoding:?}"
+        );
+        assert_eq!(body, "delve gzip ok");
     }
 
     #[test]

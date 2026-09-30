@@ -507,6 +507,13 @@ immediately with a clear `PluginError::Rejected` naming the missing key,
 rather than letting a missing credential surface later as an opaque HTTP
 401 from inside a request.
 
+Non-secret plugin options go under `[vendors.settings.<vendor_id>]`
+instead, with each value a string or a list of strings (for example
+`vendor-unifi`'s `models`, see [Vendor: UniFi](#vendor-unifi)). They're
+used as written, with no `env:` indirection. Plugins read them with
+`ctx.setting(key)`, or `ctx.setting_list(key)`, which fails with a clear
+error when a list setting was given as a single string.
+
 ## Rate limiting
 
 `ScrapeContext::throttle()` enforces a minimum interval between requests
@@ -697,6 +704,9 @@ enabled = ["cisco"]                             # narrows compiled-in vendors; e
 client_id = "your-api-console-client-id"
 client_secret = "env:CISCO_CLIENT_SECRET"
 
+[vendors.settings.unifi]                        # non-secret, per-plugin settings
+models = ["U7PG2", "USMINI"]                    # see "Tracking only some models"
+
 [transport]
 default = "direct"                              # "direct" | "tor" | { socks5 = { addr = "..." } }
 user_agent = "delve/0.1.0 (contact: ops@example.com)"
@@ -787,15 +797,61 @@ but each has its own version quirks and should be checked the same way
 
 ### Requests per dig
 
-`discover()` makes **one** request: the API ignores `offset`, so there is no
-real pagination, and a single request with a large `limit` returns all
-~3,400 release records (about 3 MB). It caches the full records in memory,
-and `metadata()` answers from that cache instead of requesting each record
-— otherwise a dig would take about an hour at the default one request per
-second. A response that fills the whole `limit` is treated as possibly
-truncated and fails the dig rather than silently missing records.
+By default, `discover()` makes **one** request: the API ignores `offset`,
+so there is no real pagination, and a single request with a large `limit`
+returns all ~3,400 release records (about 3 MB, or about 530 KB on the
+wire, since responses are gzip-compressed). It caches the full records in
+memory, and `metadata()` answers from that cache instead of requesting
+each record — otherwise a dig would take about an hour at the default one
+request per second. A response that fills the whole `limit` is treated as
+possibly truncated and fails the dig rather than silently missing records.
 `unearth` makes two requests: the record (the cache is empty in a fresh
 process), then the file.
+
+### Tracking only some models
+
+To track only the devices you own, list their model codes (the API's
+`platform`, the same value `catalog` shows as `DEVICE_FAMILY`):
+
+```toml
+[vendors.settings.unifi]
+models = ["U7PG2", "USMINI", "UXGPRO"]
+```
+
+`discover()` then makes one request per model instead of one for
+everything. A model with no release firmware fails the dig, since that
+almost always means a mistyped code, which would otherwise silently track
+nothing.
+
+**Changing the list changes what a dig sees:**
+- **Adding a model** after the first dig makes its whole release history
+  look new, so the next dig notifies about every version it has ever had.
+  Run `delve dig --vendor unifi --redig` once after adding models to store
+  them silently instead. That dig is silent for every model, so it also
+  won't notify about a genuine new release that happens to land in it.
+- **Removing a model** stops updating it, but its entries stay in the
+  store and in `catalog`.
+
+**Choosing between the two modes.** Measured against the live API
+(September 2026) with the default one-request-per-second rate limit, using
+the release binary on a fresh database. The model sets are spread evenly
+across the ~200 model codes; transfer sizes are estimates from gzipping
+each response's JSON.
+
+| Models | Requests | Records | Transfer | Dig time | Peak memory |
+|---|---|---|---|---|---|
+| All (default) | 1 | 3,374 | ~546 KB | 2.4 s | 43 MiB |
+| 1 | 1 | 16 | ~3 KB | 0.2 s | 27 MiB |
+| 5 | 5 | 109 | ~20 KB | 4.2 s | 27 MiB |
+| 20 | 20 | 338 | ~62 KB | 19.2 s | 27 MiB |
+| 50 | 50 | 829 | ~153 KB | 49.5 s | 27 MiB |
+
+Incremental digs took the same time as the baseline digs shown here.
+Per-model digs always transfer less and use less memory, but they're
+throttled to one request per second, so a dig takes about a second per
+model. Past 3 models, a per-model dig is slower than the single request
+for everything. List models when you want to track only those devices
+(a smaller store, `catalog` output and notifications), not for speed.
 
 ### Terms of service
 
@@ -830,11 +886,8 @@ the plugin's use changes.
   channels, and a decision on identity: some versions appear in both
   channels with identical files, and `select_records` currently keeps just
   the newest record per model and version.
-- **Request efficiency and performance.** One ~3 MB request per dig is fine
-  today, but is worth revisiting:
-  - Enabling `reqwest`'s `gzip` feature would cut the transfer to ~530 KB.
-  - Per-model requests (`filter=eq~~platform~~<code>`) would let a dig
-    cover only chosen models, at one request per model.
+- **Request efficiency and performance.** One request per dig (~530 KB
+  gzip-compressed, ~3 MB decoded) is fine today, but is worth revisiting:
   - `/api/firmware-latest` returns only the newest version per model (~200
     records) — much smaller, but it would miss re-published old versions.
   - The in-memory cache holds every record for the life of the process.
@@ -955,11 +1008,15 @@ exists because of it, not as a design decision made up front.
   duplicate of a model and version, SHA-256 decoding, version ordinals
   (numeric builds, Cloud Key git-hash builds, pre-releases as Opaque), and
   `metadata()` being served from the discover cache without a request.
-  Two live tests are marked `#[ignore]` so they don't run by default or in
-  CI; run them with `cargo test -p vendor-unifi -- --ignored`. One runs
-  `discover` and `metadata` over every release record; the other downloads
-  a ~500 KB image with an empty cache (as `unearth` does) and checks it
-  against the published SHA-256.
+  `discover` runs against a local mock of the list API: one request by
+  default, one request per distinct model with `models` set, dropping
+  other models if the server ignores the model filter, and failing on a
+  model with no firmware or an empty or non-list `models` setting.
+  Three live tests are marked `#[ignore]` so they don't run by default or
+  in CI; run them with `cargo test -p vendor-unifi -- --ignored`. One runs
+  `discover` and `metadata` over every release record; one runs a
+  per-model `discover`; the third downloads a ~500 KB image with an empty
+  cache (as `unearth` does) and checks it against the published SHA-256.
 
 - **`delve-cli/src/commands/{dig,catalog,provenance}.rs`**: each command
   driven end to end against the real engine and an in-memory

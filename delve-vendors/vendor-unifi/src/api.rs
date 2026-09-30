@@ -55,13 +55,25 @@ pub const CHANNEL: &str = "release";
 /// exactly this many records is treated as possibly truncated.
 pub const LIST_LIMIT: usize = 100_000;
 
-pub fn list_url() -> Url {
-    let mut url = Url::parse(API_BASE).expect("API_BASE is a valid URL");
-    url.query_pairs_mut()
-        .append_pair("filter", &format!("eq~~product~~{PRODUCT}"))
-        .append_pair("filter", &format!("eq~~channel~~{CHANNEL}"))
-        .append_pair("limit", &LIST_LIMIT.to_string());
+/// The list request for every tracked model, or — with `model` — for just
+/// that one model code (the API's `platform`, e.g. `U7PG2`).
+pub fn list_url(base: &Url, model: Option<&str>) -> Url {
+    let mut url = base.clone();
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("filter", &format!("eq~~product~~{PRODUCT}"))
+            .append_pair("filter", &format!("eq~~channel~~{CHANNEL}"));
+        if let Some(model) = model {
+            query.append_pair("filter", &format!("eq~~platform~~{model}"));
+        }
+        query.append_pair("limit", &LIST_LIMIT.to_string());
+    }
     url
+}
+
+pub fn api_base() -> Url {
+    Url::parse(API_BASE).expect("API_BASE is a valid URL")
 }
 
 /// One firmware record as the API returns it, both in the list response
@@ -297,11 +309,20 @@ mod tests {
 
     #[test]
     fn list_url_filters_on_product_and_release_channel() {
-        let url = list_url().to_string();
+        let url = list_url(&api_base(), None).to_string();
         assert!(url.starts_with(API_BASE));
         assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-firmware"));
         assert!(url.contains("filter=eq%7E%7Echannel%7E%7Erelease"));
+        assert!(!url.contains("platform"));
         assert!(url.contains("limit=100000"));
+    }
+
+    #[test]
+    fn list_url_for_one_model_adds_a_platform_filter() {
+        let url = list_url(&api_base(), Some("U7PG2")).to_string();
+        assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-firmware"));
+        assert!(url.contains("filter=eq%7E%7Echannel%7E%7Erelease"));
+        assert!(url.contains("filter=eq%7E%7Eplatform%7E%7EU7PG2"));
     }
 
     #[test]

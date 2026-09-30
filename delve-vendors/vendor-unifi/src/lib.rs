@@ -13,10 +13,12 @@
 //! See `api.rs`'s module doc comment for what was verified against live
 //! responses.
 //!
-//! **One request per dig.** `discover()` fetches every release record in a
-//! single list request and caches the full records in memory, keyed by
-//! each record's own API URL (the `FirmwareRef::source_url` it hands
-//! back). `metadata()` then answers from that cache without a request of
+//! **One request per dig**, by default: `discover()` fetches every release
+//! record in a single list request. With `models` set under
+//! `[vendors.settings.unifi]`, it instead makes one list request per model
+//! and tracks only those models. Either way it caches the full records in
+//! memory, keyed by each record's own API URL (the `FirmwareRef::source_url`
+//! it hands back). `metadata()` then answers from that cache without a request of
 //! its own. Only a cache miss — `metadata()` called without a preceding
 //! `discover()` in this process — falls back to fetching the record's own
 //! URL. `fetch()` usually runs in a fresh `unearth` process with an empty
@@ -39,6 +41,9 @@ use delve_core::prelude::*;
 use api::FirmwareRecord;
 
 pub struct UnifiPlugin {
+    /// Base URL of the firmware list API — [`api::API_BASE`] except in
+    /// tests, which point it at a local server.
+    api_base: url::Url,
     /// Records from the most recent `discover()`, keyed by
     /// `FirmwareRef::source_url`. Replaced wholesale on every discover so
     /// records Ubiquiti has removed don't linger.
@@ -48,8 +53,72 @@ pub struct UnifiPlugin {
 impl UnifiPlugin {
     pub fn new() -> Self {
         Self {
+            api_base: api::api_base(),
             cache: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Fetches and parses one list request — every tracked model, or only
+    /// `model` — and fails if the response may have been truncated.
+    async fn fetch_list(
+        &self,
+        ctx: &ScrapeContext,
+        model: Option<&str>,
+    ) -> Result<api::ParsedList, PluginError> {
+        let url = api::list_url(&self.api_base, model);
+        let body = get_text(ctx, url.as_str()).await?;
+        let parsed = api::parse_list(&body)?;
+
+        if parsed.total >= api::LIST_LIMIT {
+            return Err(PluginError::UnexpectedResponse(format!(
+                "UniFi firmware list returned {} records, the request's limit — the response may be \
+                 truncated, and the API ignores offset so it can't be paged; raise api::LIST_LIMIT",
+                parsed.total
+            )));
+        }
+        for reason in &parsed.skipped {
+            tracing::warn!(
+                vendor = "unifi",
+                "skipping unparseable firmware record {reason}"
+            );
+        }
+        Ok(parsed)
+    }
+
+    /// Every release record for the models in `models`, one request each.
+    /// Re-checks each record's model in case the server ignored the filter,
+    /// and fails on a model with no records at all — almost always a
+    /// mistyped model code, which would otherwise silently track nothing.
+    async fn fetch_models(
+        &self,
+        ctx: &ScrapeContext,
+        models: &[String],
+    ) -> Result<(Vec<FirmwareRecord>, usize), PluginError> {
+        if models.is_empty() {
+            return Err(PluginError::Rejected(
+                "[vendors.settings.unifi] models is empty; remove it to track every model".into(),
+            ));
+        }
+
+        let mut records = Vec::new();
+        let mut total = 0;
+        let mut seen = std::collections::HashSet::new();
+        for model in models {
+            if !seen.insert(model.as_str()) {
+                continue;
+            }
+            let parsed = self.fetch_list(ctx, Some(model)).await?;
+            total += parsed.total;
+            let before = records.len();
+            records.extend(parsed.records.into_iter().filter(|r| &r.platform == model));
+            if records.len() == before {
+                return Err(PluginError::Rejected(format!(
+                    "no UniFi release firmware found for model '{model}' — check the model code \
+                     in [vendors.settings.unifi] models (the API's platform, e.g. U7PG2)"
+                )));
+            }
+        }
+        Ok((records, total))
     }
 
     fn cached(&self, source_url: &url::Url) -> Option<FirmwareRecord> {
@@ -112,28 +181,18 @@ impl VendorPlugin for UnifiPlugin {
     }
 
     async fn discover(&self, ctx: &ScrapeContext) -> Result<Vec<FirmwareRef>, PluginError> {
-        let url = api::list_url();
-        let body = get_text(ctx, url.as_str()).await?;
-        let parsed = api::parse_list(&body)?;
+        let (records, total) = match ctx.setting_list("models")? {
+            Some(models) => self.fetch_models(ctx, models).await?,
+            None => {
+                let parsed = self.fetch_list(ctx, None).await?;
+                (parsed.records, parsed.total)
+            }
+        };
 
-        if parsed.total >= api::LIST_LIMIT {
-            return Err(PluginError::UnexpectedResponse(format!(
-                "UniFi firmware list returned {} records, the request's limit — the response may be \
-                 truncated, and the API ignores offset so it can't be paged; raise api::LIST_LIMIT",
-                parsed.total
-            )));
-        }
-        for reason in &parsed.skipped {
-            tracing::warn!(
-                vendor = "unifi",
-                "skipping unparseable firmware record {reason}"
-            );
-        }
-
-        let records = api::select_records(parsed.records);
+        let records = api::select_records(records);
         tracing::info!(
             vendor = "unifi",
-            received = parsed.total,
+            received = total,
             tracked = records.len(),
             "UniFi firmware list fetched"
         );
@@ -220,8 +279,9 @@ inventory::submit! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use delve_core::context::{HttpClientConfig, RateLimit};
+    use delve_core::context::{HttpClientConfig, RateLimit, SettingValue, Settings};
     use sha2::{Digest, Sha256};
+    use std::sync::Arc;
 
     fn ctx() -> ScrapeContext {
         ScrapeContext::new(
@@ -231,6 +291,173 @@ mod tests {
             RateLimit::default(),
         )
         .unwrap()
+    }
+
+    /// A context with no rate limit and the given `models` setting, for
+    /// tests against the local mock API.
+    fn ctx_with_models(models: Option<SettingValue>) -> ScrapeContext {
+        let settings: Settings = models
+            .map(|m| Settings::from([("models".to_string(), m)]))
+            .unwrap_or_default();
+        ScrapeContext::new(
+            Transport::Direct,
+            Default::default(),
+            HttpClientConfig::default(),
+            RateLimit {
+                min_interval: std::time::Duration::ZERO,
+            },
+        )
+        .unwrap()
+        .with_settings(settings)
+    }
+
+    fn models(codes: &[&str]) -> Option<SettingValue> {
+        Some(SettingValue::List(
+            codes.iter().map(|c| c.to_string()).collect(),
+        ))
+    }
+
+    /// A local stand-in for the list API, serving the fixture records. It
+    /// applies a `platform` filter the way the real API does, unless
+    /// `honor_platform_filter` is false. Returns the plugin pointed at it and
+    /// the query string of every request it received.
+    fn mock_api(honor_platform_filter: bool) -> (UnifiPlugin, Arc<Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base: url::Url = format!("http://{}/api/firmware", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/firmware_list.json")).unwrap();
+
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
+                let request_line = lines.next().unwrap().unwrap();
+                for line in lines.by_ref() {
+                    if line.unwrap().is_empty() {
+                        break;
+                    }
+                }
+
+                let target = request_line.split_whitespace().nth(1).unwrap();
+                let url = url::Url::parse(&format!("http://mock{target}")).unwrap();
+                seen.lock()
+                    .unwrap()
+                    .push(url.query().unwrap_or("").to_string());
+                let platform = url.query_pairs().find_map(|(k, v)| {
+                    (k == "filter")
+                        .then(|| v.strip_prefix("eq~~platform~~").map(String::from))
+                        .flatten()
+                });
+
+                let firmware: Vec<&serde_json::Value> = fixture["_embedded"]["firmware"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|r| match (&platform, honor_platform_filter) {
+                        (Some(p), true) => r["platform"] == p.as_str(),
+                        _ => true,
+                    })
+                    .collect();
+                let body = serde_json::json!({ "_embedded": { "firmware": firmware } }).to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+
+        let plugin = UnifiPlugin {
+            api_base: base,
+            ..UnifiPlugin::new()
+        };
+        (plugin, requests)
+    }
+
+    fn platforms(refs: &[FirmwareRef]) -> Vec<&str> {
+        let mut p: Vec<&str> = refs.iter().map(|r| r.device_family.as_str()).collect();
+        p.sort_unstable();
+        p
+    }
+
+    #[tokio::test]
+    async fn default_discover_makes_one_request_for_every_model() {
+        let (plugin, requests) = mock_api(true);
+        let refs = plugin.discover(&ctx_with_models(None)).await.unwrap();
+
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].contains("platform"), "{}", requests[0]);
+        // Every fixture model except the placeholder `stat` record.
+        assert_eq!(
+            platforms(&refs),
+            ["U7PG2", "U7PG2", "UCKG2", "USMINI", "UX", "UXGPRO"]
+        );
+    }
+
+    #[tokio::test]
+    async fn models_setting_makes_one_request_per_model_and_tracks_only_those() {
+        let (plugin, requests) = mock_api(true);
+        let ctx = ctx_with_models(models(&["U7PG2", "USMINI", "U7PG2"]));
+        let refs = plugin.discover(&ctx).await.unwrap();
+
+        let seen = requests.lock().unwrap().clone();
+        assert_eq!(seen.len(), 2, "one request per distinct model: {seen:?}");
+        assert!(seen[0].contains("filter=eq%7E%7Eplatform%7E%7EU7PG2"));
+        assert!(seen[1].contains("filter=eq%7E%7Eplatform%7E%7EUSMINI"));
+        assert_eq!(platforms(&refs), ["U7PG2", "U7PG2", "USMINI"]);
+
+        // metadata() is still answered from the cache that discover filled.
+        let meta = plugin.metadata(&ctx, &refs[0]).await.unwrap();
+        assert_eq!(meta.device_family, refs[0].device_family);
+        assert_eq!(requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_server_ignoring_the_model_filter_cant_add_other_models() {
+        let (plugin, _) = mock_api(false);
+        let refs = plugin
+            .discover(&ctx_with_models(models(&["UX"])))
+            .await
+            .unwrap();
+        assert_eq!(platforms(&refs), ["UX"]);
+    }
+
+    #[tokio::test]
+    async fn a_model_with_no_firmware_fails_the_dig() {
+        let (plugin, _) = mock_api(true);
+        let err = plugin
+            .discover(&ctx_with_models(models(&["U7PG2", "U7PG3"])))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PluginError::Rejected(_)), "{err}");
+        assert!(err.to_string().contains("model 'U7PG3'"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_empty_or_non_list_models_setting_is_rejected() {
+        let (plugin, requests) = mock_api(true);
+
+        let err = plugin
+            .discover(&ctx_with_models(models(&[])))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("models is empty"), "{err}");
+
+        let err = plugin
+            .discover(&ctx_with_models(Some(SettingValue::Text("U7PG2".into()))))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("must be a list"), "{err}");
+
+        assert!(requests.lock().unwrap().is_empty());
     }
 
     fn fixture_records() -> Vec<FirmwareRecord> {
@@ -325,6 +552,26 @@ mod tests {
             refs.len(),
             "every tracked record should have a SHA-256"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live Ubiquiti API"]
+    async fn live_per_model_discover_tracks_only_those_models() {
+        let plugin = UnifiPlugin::new();
+        let ctx = ctx().with_settings(Settings::from([(
+            "models".to_string(),
+            SettingValue::List(vec!["U7PG2".into(), "USMINI".into()]),
+        )]));
+        let refs = plugin.discover(&ctx).await.unwrap();
+
+        let mut families: Vec<&str> = refs.iter().map(|r| r.device_family.as_str()).collect();
+        families.sort_unstable();
+        families.dedup();
+        assert_eq!(families, ["U7PG2", "USMINI"]);
+        for r in &refs {
+            let meta = plugin.metadata(&ctx, r).await.unwrap();
+            assert_eq!(meta.hardware_targets, vec![r.device_family.clone()]);
+        }
     }
 
     #[tokio::test]

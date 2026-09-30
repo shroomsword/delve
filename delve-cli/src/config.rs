@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use delve_core::context::{Credentials, Transport, TransportOverrides};
+use delve_core::context::{Credentials, Settings, Transport, TransportOverrides};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -45,9 +45,22 @@ pub struct VendorsConfig {
     /// prefixed with `env:` is used as a literal.
     #[serde(default)]
     pub credentials: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+
+    /// Per-vendor, non-secret plugin settings, keyed by vendor id then by
+    /// whatever setting names that vendor's plugin documents (e.g.
+    /// `vendor-unifi`'s `models`). Values are a string or a list of
+    /// strings, used as written — no `env:` indirection, since nothing
+    /// here is secret.
+    #[serde(default)]
+    pub settings: std::collections::HashMap<String, Settings>,
 }
 
 impl VendorsConfig {
+    /// One vendor's `[vendors.settings.<id>]` table, or an empty one.
+    pub fn settings_for(&self, vendor_id: &str) -> Settings {
+        self.settings.get(vendor_id).cloned().unwrap_or_default()
+    }
+
     /// Resolves the configured credentials for one vendor into what
     /// `ScrapeContext::new` expects — substituting any `env:VAR_NAME`
     /// values along the way. A vendor with no `[vendors.credentials.<id>]`
@@ -620,5 +633,30 @@ mod tests {
             !overrides.contains_key("netgear"),
             "a vendor with no override entry must not appear in the map"
         );
+    }
+
+    #[test]
+    fn vendor_settings_parse_per_vendor_as_strings_or_lists() {
+        use delve_core::context::SettingValue;
+
+        let config: Config = toml::from_str(
+            r#"
+            [vendors.settings.unifi]
+            models = ["U7PG2", "USMINI"]
+            channel = "release"
+            "#,
+        )
+        .unwrap();
+
+        let unifi = config.vendors.settings_for("unifi");
+        assert_eq!(
+            unifi.get("models"),
+            Some(&SettingValue::List(vec!["U7PG2".into(), "USMINI".into()]))
+        );
+        assert_eq!(
+            unifi.get("channel"),
+            Some(&SettingValue::Text("release".into()))
+        );
+        assert!(config.vendors.settings_for("cisco").is_empty());
     }
 }
