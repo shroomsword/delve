@@ -225,7 +225,8 @@ release short of the binary itself; `MetadataStore::upsert` persists it.
 **`vendor`/`device_family`/`source_url` are duplicated onto
 `FirmwareMetadata` from `FirmwareRef`.** This looks redundant, and it is —
 deliberately. `MetadataStore::resolve_one`/`resolve_many` (what backs
-`catalog`, `provenance`, and `unearth`) only return `FirmwareMetadata`. Without
+`catalog`, `provenance`, and `unearth`) return a `StoredFirmware` — the
+surrogate id plus the `FirmwareMetadata`, which `catalog` prints. Without
 these three fields also living there, a lookup by surrogate id alone
 (`unearth --id <uuid>`) couldn't recover which vendor owns the entry or
 rebuild the `FirmwareRef` that `fetch()` needs. The engine populates all

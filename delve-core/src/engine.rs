@@ -8,6 +8,8 @@ use crate::context::ScrapeContext;
 use crate::events::{EventBus, FieldDiff, FirmwareEvent};
 use crate::model::VersionDirection;
 use crate::plugin::{PluginError, VendorPlugin};
+#[cfg(test)]
+use crate::store::StoredFirmware;
 use crate::store::{MetadataStore, RunKind, RunOutcome, StoreError};
 
 #[derive(Debug, thiserror::Error)]
@@ -409,14 +411,14 @@ mod tests {
         async fn resolve_one(
             &self,
             _selector: &FirmwareSelector,
-        ) -> Result<Option<FirmwareMetadata>, StoreError> {
+        ) -> Result<Option<StoredFirmware>, StoreError> {
             unimplemented!("not exercised by engine tests — see delve-store-sqlite's test suite")
         }
 
         async fn resolve_many(
             &self,
             _selector: &FirmwareSelector,
-        ) -> Result<Vec<FirmwareMetadata>, StoreError> {
+        ) -> Result<Vec<StoredFirmware>, StoreError> {
             unimplemented!("not exercised by engine tests — see delve-store-sqlite's test suite")
         }
     }

@@ -27,9 +27,9 @@ pub struct FirmwareRef {
 ///
 /// `vendor`/`device_family`/`source_url` are duplicated here from
 /// `FirmwareRef` (rather than requiring callers to carry both around) so
-/// that `MetadataStore::resolve_one`/`resolve_many`, which only return
-/// `FirmwareMetadata`, are enough on their own to drive `provenance --id`/
-/// `unearth --id` without a second lookup — `source_url` specifically is
+/// that a `StoredFirmware` from `MetadataStore::resolve_one`/`resolve_many`
+/// is enough on its own to drive `provenance --id`/`unearth --id` without a
+/// second lookup — `source_url` specifically is
 /// what `unearth` needs to rebuild the `FirmwareRef` it hands to
 /// `VendorPlugin::fetch`. The engine populates all three from the
 /// originating `FirmwareRef` right after a plugin's `metadata()` call

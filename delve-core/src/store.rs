@@ -106,6 +106,15 @@ impl<'a> FirmwareKey<'a> {
     }
 }
 
+/// A stored entry together with its surrogate id — the value `--id` takes
+/// on `unearth`/`provenance`, and what `catalog` prints so it can be
+/// copy-pasted.
+#[derive(Debug, Clone)]
+pub struct StoredFirmware {
+    pub id: Uuid,
+    pub metadata: FirmwareMetadata,
+}
+
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
     // --- diff-loop path, called once per FirmwareRef during a dig ---
@@ -166,9 +175,9 @@ pub trait MetadataStore: Send + Sync {
     async fn resolve_one(
         &self,
         selector: &FirmwareSelector,
-    ) -> Result<Option<FirmwareMetadata>, StoreError>;
+    ) -> Result<Option<StoredFirmware>, StoreError>;
     async fn resolve_many(
         &self,
         selector: &FirmwareSelector,
-    ) -> Result<Vec<FirmwareMetadata>, StoreError>;
+    ) -> Result<Vec<StoredFirmware>, StoreError>;
 }

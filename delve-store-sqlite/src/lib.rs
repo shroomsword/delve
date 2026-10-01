@@ -16,7 +16,8 @@ use async_trait::async_trait;
 use chrono::Utc;
 use delve_core::model::{hardware_key, FirmwareMetadata, FirmwareRef, VersionScheme};
 use delve_core::store::{
-    FirmwareKey, FirmwareRevision, FirmwareSelector, MetadataStore, RunKind, RunOutcome, StoreError,
+    FirmwareKey, FirmwareRevision, FirmwareSelector, MetadataStore, RunKind, RunOutcome,
+    StoreError, StoredFirmware,
 };
 use sqlx::{sqlite::SqlitePoolOptions, QueryBuilder, Row, Sqlite, SqlitePool};
 use uuid::Uuid;
@@ -118,6 +119,16 @@ impl SqliteStore {
             .try_get("metadata_json")
             .map_err(|e| StoreError::Backend(e.to_string()))?;
         serde_json::from_str(&json).map_err(|e| StoreError::Backend(e.to_string()))
+    }
+
+    fn row_to_stored(row: &sqlx::sqlite::SqliteRow) -> Result<StoredFirmware, StoreError> {
+        let id: String = row
+            .try_get("id")
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(StoredFirmware {
+            id: Uuid::parse_str(&id).map_err(|e| StoreError::Backend(e.to_string()))?,
+            metadata: Self::row_to_metadata(row)?,
+        })
     }
 }
 
@@ -359,7 +370,7 @@ impl MetadataStore for SqliteStore {
     async fn resolve_one(
         &self,
         selector: &FirmwareSelector,
-    ) -> Result<Option<FirmwareMetadata>, StoreError> {
+    ) -> Result<Option<StoredFirmware>, StoreError> {
         let matches = self.resolve_many(selector).await?;
         match matches.len() {
             0 => Ok(None),
@@ -371,23 +382,23 @@ impl MetadataStore for SqliteStore {
     async fn resolve_many(
         &self,
         selector: &FirmwareSelector,
-    ) -> Result<Vec<FirmwareMetadata>, StoreError> {
+    ) -> Result<Vec<StoredFirmware>, StoreError> {
         // --id short-circuits every other filter — it addresses exactly one
         // row by its surrogate key.
         if let Some(id) = selector.id {
-            let row = sqlx::query("SELECT metadata_json FROM firmware_current WHERE id = ?")
+            let row = sqlx::query("SELECT id, metadata_json FROM firmware_current WHERE id = ?")
                 .bind(id.to_string())
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| StoreError::Backend(e.to_string()))?;
             return Ok(match row {
-                Some(r) => vec![Self::row_to_metadata(&r)?],
+                Some(r) => vec![Self::row_to_stored(&r)?],
                 None => vec![],
             });
         }
 
         let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "SELECT metadata_json, vendor, device_family, hardware_key, version_ordinal \
+            "SELECT id, metadata_json, vendor, device_family, hardware_key, version_ordinal \
              FROM firmware_current WHERE 1 = 1",
         );
 
@@ -417,7 +428,7 @@ impl MetadataStore for SqliteStore {
             .map_err(|e| StoreError::Backend(e.to_string()))?;
 
         if !selector.latest {
-            return rows.iter().map(Self::row_to_metadata).collect();
+            return rows.iter().map(Self::row_to_stored).collect();
         }
 
         // --latest: keep the first row per (vendor, device_family,
@@ -449,7 +460,7 @@ impl MetadataStore for SqliteStore {
                 .try_get("hardware_key")
                 .map_err(|e| StoreError::Backend(e.to_string()))?;
             if seen_groups.insert((vendor, device_family, hw)) {
-                result.push(Self::row_to_metadata(row)?);
+                result.push(Self::row_to_stored(row)?);
             }
         }
         Ok(result)
@@ -601,7 +612,7 @@ mod tests {
             .unwrap()
             .expect("entry should resolve");
         assert_eq!(
-            found.source_url.as_str(),
+            found.metadata.source_url.as_str(),
             "https://example.test/actual-firmware-image"
         );
     }
@@ -739,6 +750,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolved_entries_carry_an_id_that_resolves_back_to_the_same_entry() {
+        let store = test_store().await;
+        let r = firmware_ref("acme", "widget", "https://example.test/a");
+        let run_id = store.start_run("acme", RunKind::Baseline).await.unwrap();
+        store
+            .upsert(
+                &r,
+                &metadata(
+                    "acme",
+                    "widget",
+                    "1.0.0",
+                    Some(vec![1, 0, 0]),
+                    &["rev-a"],
+                    1,
+                ),
+                run_id,
+            )
+            .await
+            .unwrap();
+
+        let listed = store
+            .resolve_many(&FirmwareSelector::default())
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+
+        let by_id = store
+            .resolve_one(&FirmwareSelector {
+                id: Some(listed[0].id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .expect("id from resolve_many should resolve");
+        assert_eq!(by_id.id, listed[0].id);
+        assert_eq!(by_id.metadata.version.raw, "1.0.0");
+    }
+
+    #[tokio::test]
     async fn resolve_one_errors_ambiguous_when_selector_matches_multiple_entries() {
         let store = test_store().await;
         let r = firmware_ref("acme", "widget", "https://example.test/a");
@@ -841,7 +891,7 @@ mod tests {
         };
         let matches = store.resolve_many(&selector).await.unwrap();
         assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].version.raw, "1.0.0");
+        assert_eq!(matches[0].metadata.version.raw, "1.0.0");
     }
 
     #[tokio::test]
@@ -908,7 +958,7 @@ mod tests {
             "one group must resolve to exactly one latest entry"
         );
         assert_eq!(
-            matches[0].version.raw, "1.10.0",
+            matches[0].metadata.version.raw, "1.10.0",
             "1.10.0 must beat 1.2.0 by numeric ordinal, not lexicographic string order"
         );
     }
@@ -1015,15 +1065,15 @@ mod tests {
             ..Default::default()
         };
         let mut matches = store.resolve_many(&selector).await.unwrap();
-        matches.sort_by(|a, b| a.device_family.cmp(&b.device_family));
+        matches.sort_by(|a, b| a.metadata.device_family.cmp(&b.metadata.device_family));
 
         assert_eq!(
             matches.len(),
             2,
             "two independent device families must each get their own latest entry"
         );
-        assert_eq!(matches[0].version.raw, "3.5.0"); // gadget
-        assert_eq!(matches[1].version.raw, "2.0.0"); // widget
+        assert_eq!(matches[0].metadata.version.raw, "3.5.0"); // gadget
+        assert_eq!(matches[1].metadata.version.raw, "2.0.0"); // widget
     }
 
     #[tokio::test]
