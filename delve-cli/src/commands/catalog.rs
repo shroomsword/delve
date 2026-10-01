@@ -20,7 +20,9 @@ pub async fn run(
     }
 
     if long {
-        for e in &entries {
+        for s in &entries {
+            let e = &s.metadata;
+            writeln!(out, "id:             {}", s.id)?;
             writeln!(out, "vendor:         {}", e.vendor)?;
             writeln!(out, "device_family:  {}", e.device_family)?;
             writeln!(out, "source_url:     {}", e.source_url)?;
@@ -56,17 +58,19 @@ pub async fn run(
         // Default view: the most useful fields only, one line per entry.
         writeln!(
             out,
-            "{:<12} {:<14} {:<24} {:<16} {:<12} SHA256 (short)",
-            "VENDOR", "DEVICE_FAMILY", "VERSION", "HARDWARE", "RELEASED"
+            "{:<36} {:<12} {:<14} {:<24} {:<16} {:<12} SHA256 (short)",
+            "ID", "VENDOR", "DEVICE_FAMILY", "VERSION", "HARDWARE", "RELEASED"
         )?;
-        for e in &entries {
+        for s in &entries {
+            let e = &s.metadata;
             let short_hash = e
                 .sha256
                 .map(|h| hex_string(&h)[..12].to_string())
                 .unwrap_or_else(|| "-".into());
             writeln!(
                 out,
-                "{:<12} {:<14} {:<24} {:<16} {:<12} {}",
+                "{:<36} {:<12} {:<14} {:<24} {:<16} {:<12} {}",
+                s.id,
                 e.vendor,
                 e.device_family,
                 e.version.raw,
@@ -146,13 +150,13 @@ mod tests {
         let store = seeded_store().await;
         let out = catalog(&store, selector(), false).await.unwrap();
 
-        assert!(out.starts_with("VENDOR"), "{out}");
+        assert!(out.starts_with("ID "), "{out}");
         assert_eq!(rows(&out).len(), 5, "{out}");
         let sprocket = rows(&out)
             .into_iter()
             .find(|r| r.contains("sprocket"))
             .unwrap();
-        assert!(sprocket.starts_with("globex"), "{sprocket}");
+        assert!(sprocket[37..].starts_with("globex"), "{sprocket}");
         assert!(sprocket.contains("2026-09-01"), "{sprocket}");
         // sha byte 5 → "0505...", truncated to 12 hex digits.
         assert!(sprocket.ends_with(" 050505050505"), "{sprocket}");
@@ -228,5 +232,33 @@ mod tests {
         assert!(out.contains("release_notes:  -\n"), "{out}");
         assert!(out.contains("signature:      -\n"), "{out}");
         assert!(out.ends_with("---\n"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn long_view_prints_the_entry_id() {
+        let store = seeded_store().await;
+        let mut s = selector();
+        s.vendor = Some("globex".into());
+
+        let out = catalog(&store, s, true).await.unwrap();
+        let id = out.lines().next().unwrap().strip_prefix("id:").unwrap();
+        uuid::Uuid::parse_str(id.trim()).expect("id line should hold a uuid");
+    }
+
+    #[tokio::test]
+    async fn an_id_printed_by_catalog_addresses_exactly_that_entry() {
+        let store = seeded_store().await;
+        let out = catalog(&store, selector(), false).await.unwrap();
+        let sprocket = rows(&out)
+            .into_iter()
+            .find(|r| r.contains("sprocket"))
+            .unwrap();
+        let id: uuid::Uuid = sprocket.split_whitespace().next().unwrap().parse().unwrap();
+
+        let mut s = selector();
+        s.id = Some(id);
+        let out = catalog(&store, s, false).await.unwrap();
+        assert_eq!(rows(&out).len(), 1, "{out}");
+        assert!(rows(&out)[0].contains("sprocket"), "{out}");
     }
 }

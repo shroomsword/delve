@@ -67,7 +67,8 @@ pub async fn run(
     let entry = store
         .resolve_one(&selector.into_store_selector())
         .await?
-        .ok_or_else(|| anyhow::anyhow!("no matching firmware entry"))?;
+        .ok_or_else(|| anyhow::anyhow!("no matching firmware entry"))?
+        .metadata;
 
     // FirmwareMetadata now carries vendor/device_family, so this works for
     // --id alone, not just natural-key selectors.
