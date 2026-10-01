@@ -76,18 +76,27 @@ impl VendorsConfig {
 
         let mut resolved = Credentials::new();
         for (key, value) in raw {
-            let resolved_value = match value.strip_prefix("env:") {
-                Some(var_name) => std::env::var(var_name).map_err(|_| {
-                    anyhow::anyhow!(
-                        "credential '{key}' for vendor '{vendor_id}' references env var \
-                         '{var_name}', which is not set"
-                    )
-                })?,
-                None => value.clone(),
-            };
+            let resolved_value = resolve_env_ref(value, || {
+                format!("credential '{key}' for vendor '{vendor_id}'")
+            })?;
             resolved.insert(key.clone(), resolved_value);
         }
         Ok(resolved)
+    }
+}
+
+/// A value of the form `"env:VAR_NAME"` is read from the process environment;
+/// anything else is used as written. `what` names the setting in the error
+/// when the variable isn't set.
+fn resolve_env_ref(value: &str, what: impl FnOnce() -> String) -> anyhow::Result<String> {
+    match value.strip_prefix("env:") {
+        Some(var_name) => std::env::var(var_name).map_err(|_| {
+            anyhow::anyhow!(
+                "{} references env var '{var_name}', which is not set",
+                what()
+            )
+        }),
+        None => Ok(value.to_string()),
     }
 }
 
@@ -225,8 +234,7 @@ fn resolve_kind(kind: &TransportKind) -> anyhow::Result<Transport> {
 #[derive(Debug, Default, Deserialize)]
 pub struct SubscribersConfig {
     pub webhook: Option<WebhookConfig>,
-    // subscriber-email intentionally omitted from this scaffold — add a
-    // config struct here + the crate under delve-subscribers/ when needed.
+    pub email: Option<EmailConfig>,
 }
 
 /// Only read from `dig.rs` when the `subscriber-webhook` feature is
@@ -237,6 +245,65 @@ pub struct SubscribersConfig {
 #[derive(Debug, Deserialize)]
 pub struct WebhookConfig {
     pub url: String,
+}
+
+/// `[subscribers.email]`. Like `WebhookConfig`, only read from `dig.rs` when
+/// its feature (`subscriber-email`) is compiled in; parsing still validates
+/// the shape without it.
+///
+/// Unknown fields are rejected: a mistyped `passwrod` would otherwise be
+/// ignored, and mail would go out unauthenticated.
+#[cfg_attr(not(feature = "subscriber-email"), allow(dead_code))]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EmailConfig {
+    pub host: String,
+    /// Defaults to the usual port for `tls` (587, 465, or 25).
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub tls: EmailTls,
+    /// A bare address or `Name <address>`.
+    pub from: String,
+    pub to: Vec<String>,
+    /// Both or neither of `username` and `password`. Either may be
+    /// `"env:VAR_NAME"`, resolved from the environment at startup (see
+    /// `resolve_credentials`).
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+/// How the SMTP connection is secured.
+#[cfg_attr(not(feature = "subscriber-email"), allow(dead_code))]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailTls {
+    /// Upgrade with STARTTLS, and fail if the server won't. Usually port 587.
+    #[default]
+    StartTls,
+    /// TLS from the first byte. Usually port 465.
+    Implicit,
+    /// No encryption. Only for a local relay: credentials cross the network
+    /// in the clear.
+    None,
+}
+
+impl EmailConfig {
+    /// The SMTP login, with any `env:` references resolved. `None` when
+    /// neither field is set. A username without a password, or the reverse,
+    /// is an error rather than a silently unauthenticated send, and so is an
+    /// `env:` reference to a variable that isn't set.
+    #[cfg_attr(not(feature = "subscriber-email"), allow(dead_code))]
+    pub fn resolve_credentials(&self) -> anyhow::Result<Option<(String, String)>> {
+        match (&self.username, &self.password) {
+            (None, None) => Ok(None),
+            (Some(username), Some(password)) => Ok(Some((
+                resolve_env_ref(username, || "[subscribers.email] username".to_string())?,
+                resolve_env_ref(password, || "[subscribers.email] password".to_string())?,
+            ))),
+            (Some(_), None) => anyhow::bail!("[subscribers.email] has a username but no password"),
+            (None, Some(_)) => anyhow::bail!("[subscribers.email] has a password but no username"),
+        }
+    }
 }
 
 /// Defaults the database under the XDG *data* directory
@@ -321,6 +388,115 @@ mod tests {
         assert!(config.vendors.enabled.is_empty());
         assert!(config.subscribers.webhook.is_none());
         assert!(config.transport.default.is_none());
+    }
+
+    #[test]
+    fn email_config_parses_with_a_starttls_default() {
+        let config: Config = toml::from_str(
+            r#"
+            [subscribers.email]
+            host = "smtp.example.test"
+            from = "Delve <delve@example.test>"
+            to = ["ops@example.test", "sec@example.test"]
+            "#,
+        )
+        .unwrap();
+        let email = config.subscribers.email.expect("email section parsed");
+        assert_eq!(email.host, "smtp.example.test");
+        assert_eq!(email.port, None);
+        assert_eq!(email.tls, EmailTls::StartTls);
+        assert_eq!(email.to.len(), 2);
+        assert!(email.resolve_credentials().unwrap().is_none());
+    }
+
+    #[test]
+    fn email_tls_accepts_each_mode_and_rejects_others() {
+        let parse = |tls: &str| {
+            toml::from_str::<Config>(&format!(
+                "[subscribers.email]\nhost = \"h\"\nfrom = \"a@b.test\"\nto = [\"c@d.test\"]\ntls = \"{tls}\"\n"
+            ))
+        };
+        assert_eq!(
+            parse("starttls").unwrap().subscribers.email.unwrap().tls,
+            EmailTls::StartTls
+        );
+        assert_eq!(
+            parse("implicit").unwrap().subscribers.email.unwrap().tls,
+            EmailTls::Implicit
+        );
+        assert_eq!(
+            parse("none").unwrap().subscribers.email.unwrap().tls,
+            EmailTls::None
+        );
+        assert!(parse("ssl").is_err());
+    }
+
+    #[test]
+    fn a_mistyped_email_field_is_an_error_not_silently_ignored() {
+        let err = toml::from_str::<Config>(
+            r#"
+            [subscribers.email]
+            host = "smtp.example.test"
+            from = "delve@example.test"
+            to = ["ops@example.test"]
+            username = "delve"
+            passwrod = "oops"
+            "#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("passwrod"), "{err}");
+    }
+
+    fn email_with_login(username: Option<&str>, password: Option<&str>) -> EmailConfig {
+        EmailConfig {
+            host: "h".into(),
+            port: None,
+            tls: EmailTls::StartTls,
+            from: "a@b.test".into(),
+            to: vec!["c@d.test".into()],
+            username: username.map(String::from),
+            password: password.map(String::from),
+        }
+    }
+
+    #[test]
+    fn email_credentials_resolve_env_references_and_use_literals_as_written() {
+        std::env::set_var("DELVE_TEST_SMTP_PASSWORD", "s3cret");
+        let creds = email_with_login(Some("delve"), Some("env:DELVE_TEST_SMTP_PASSWORD"))
+            .resolve_credentials()
+            .unwrap();
+        std::env::remove_var("DELVE_TEST_SMTP_PASSWORD");
+        assert_eq!(creds, Some(("delve".to_string(), "s3cret".to_string())));
+
+        let literal = email_with_login(Some("delve"), Some("plain"))
+            .resolve_credentials()
+            .unwrap();
+        assert_eq!(literal, Some(("delve".to_string(), "plain".to_string())));
+    }
+
+    #[test]
+    fn an_unset_email_env_var_is_an_error_naming_it() {
+        let err = email_with_login(Some("delve"), Some("env:DELVE_TEST_SMTP_DOES_NOT_EXIST"))
+            .resolve_credentials()
+            .unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("DELVE_TEST_SMTP_DOES_NOT_EXIST"),
+            "{message}"
+        );
+        assert!(message.contains("password"), "{message}");
+    }
+
+    #[test]
+    fn half_an_email_login_is_an_error() {
+        let err = email_with_login(Some("delve"), None)
+            .resolve_credentials()
+            .unwrap_err();
+        assert!(err.to_string().contains("no password"), "{err}");
+        let err = email_with_login(None, Some("x"))
+            .resolve_credentials()
+            .unwrap_err();
+        assert!(err.to_string().contains("no username"), "{err}");
     }
 
     #[test]

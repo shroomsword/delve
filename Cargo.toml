@@ -7,6 +7,7 @@ members = [
     "delve-plugin-testkit",
     "delve-vendors/vendor-cisco",
     "delve-vendors/vendor-unifi",
+    "delve-subscribers/subscriber-email",
     "delve-subscribers/subscriber-log",
     "delve-subscribers/subscriber-webhook",
 ]
@@ -32,6 +33,9 @@ url = { version = "2", features = ["serde"] }
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# SMTP for subscriber-email. rustls with the `ring` provider, the same one reqwest uses: enabling a
+# second provider (aws-lc-rs) as well makes rustls panic when it picks a default.
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "socks", "rustls-tls", "gzip"] }
 inventory = "0.3"
 clap = { version = "4", features = ["derive"] }

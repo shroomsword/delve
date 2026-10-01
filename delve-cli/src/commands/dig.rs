@@ -38,6 +38,17 @@ pub async fn run(
             tracing::warn!("webhook subscriber configured but the subscriber-webhook feature isn't compiled in");
         }
     }
+    if let Some(email_cfg) = &config.subscribers.email {
+        #[cfg(feature = "subscriber-email")]
+        subscribers.push(email_subscriber(email_cfg)?);
+        #[cfg(not(feature = "subscriber-email"))]
+        {
+            let _ = email_cfg;
+            tracing::warn!(
+                "email subscriber configured but the subscriber-email feature isn't compiled in"
+            );
+        }
+    }
     let bus = EventBus::new(subscribers);
 
     dig_vendors(
@@ -50,6 +61,31 @@ pub async fn run(
         allow_unreviewed,
     )
     .await
+}
+
+/// Builds the email subscriber from `[subscribers.email]`. Fails the dig up
+/// front on a bad address or an unset `env:` variable, rather than running
+/// without the notifications it was asked for.
+#[cfg(feature = "subscriber-email")]
+fn email_subscriber(
+    cfg: &crate::config::EmailConfig,
+) -> anyhow::Result<Box<dyn delve_core::events::Subscriber>> {
+    use crate::config::EmailTls;
+    use subscriber_email::{EmailSettings, EmailSubscriber, TlsMode};
+
+    let settings = EmailSettings {
+        host: cfg.host.clone(),
+        port: cfg.port,
+        tls: match cfg.tls {
+            EmailTls::StartTls => TlsMode::StartTls,
+            EmailTls::Implicit => TlsMode::Implicit,
+            EmailTls::None => TlsMode::None,
+        },
+        from: cfg.from.clone(),
+        to: cfg.to.clone(),
+        credentials: cfg.resolve_credentials()?,
+    };
+    Ok(Box::new(EmailSubscriber::smtp(&settings)?))
 }
 
 /// Everything `run` does after building the event bus — split out so tests
@@ -178,6 +214,147 @@ mod tests {
             false,
         )
         .await
+    }
+
+    #[cfg(feature = "subscriber-email")]
+    #[test]
+    fn the_email_subscriber_builds_from_config_and_fails_early_when_misconfigured() {
+        let build = |toml: &str| {
+            let config = config(toml);
+            email_subscriber(config.subscribers.email.as_ref().expect("email section"))
+                .map(|s| s.id())
+        };
+        let section = |extra: &str| {
+            format!(
+                "[subscribers.email]\nhost = \"smtp.example.test\"\nfrom = \"delve@example.test\"\n\
+                 to = [\"ops@example.test\"]\n{extra}"
+            )
+        };
+
+        assert_eq!(build(&section("")).unwrap(), "email");
+        assert_eq!(
+            build(&section(
+                "tls = \"implicit\"\nusername = \"u\"\npassword = \"p\""
+            ))
+            .unwrap(),
+            "email"
+        );
+
+        let missing_env = build(&section(
+            "username = \"u\"\npassword = \"env:DELVE_TEST_DIG_SMTP_UNSET\"",
+        ))
+        .unwrap_err();
+        assert!(
+            missing_env
+                .to_string()
+                .contains("DELVE_TEST_DIG_SMTP_UNSET"),
+            "{missing_env}"
+        );
+
+        let bad_to =
+            build("[subscribers.email]\nhost = \"h\"\nfrom = \"a@b.test\"\nto = [\"nope\"]\n")
+                .unwrap_err();
+        assert!(bad_to.to_string().contains("to address 'nope'"), "{bad_to}");
+    }
+
+    /// A fake SMTP server that takes any number of connections, one message
+    /// each, and records every line the client sends.
+    #[cfg(feature = "subscriber-email")]
+    fn fake_smtp_server() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = received.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut say = |l: &str| stream.write_all(format!("{l}\r\n").as_bytes()).unwrap();
+                say("220 fake ESMTP");
+                let (mut in_data, mut line) = (false, String::new());
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    let text = line.trim_end().to_string();
+                    log.lock().unwrap().push(text.clone());
+                    if in_data {
+                        if text == "." {
+                            in_data = false;
+                            say("250 queued");
+                        }
+                        continue;
+                    }
+                    let command = text.to_ascii_uppercase();
+                    if command == "DATA" {
+                        in_data = true;
+                        say("354 go ahead");
+                    } else if command == "QUIT" {
+                        say("221 bye");
+                        break;
+                    } else {
+                        say("250 ok");
+                    }
+                }
+            }
+        });
+        (addr, received)
+    }
+
+    #[cfg(feature = "subscriber-email")]
+    #[tokio::test]
+    async fn a_configured_email_subscriber_mails_each_event_of_a_real_dig() {
+        let (addr, received) = fake_smtp_server();
+        let config = config(&format!(
+            "[subscribers.email]\nhost = \"127.0.0.1\"\nport = {}\ntls = \"none\"\n\
+             from = \"Delve <delve@example.test>\"\nto = [\"ops@example.test\"]\n",
+            addr.port()
+        ));
+        let store = memory_store().await;
+        let plugin = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let releases = plugin.releases.clone();
+        let registry = registry(vec![plugin]);
+        let dig_once = || run(&config, &registry, &store, None, false, false);
+
+        // The baseline dig is silent, so no mail.
+        dig_once().await.unwrap();
+        assert!(
+            received.lock().unwrap().is_empty(),
+            "a baseline must not send mail"
+        );
+
+        // A version bump on a known line and a brand-new line: two events.
+        releases.lock().unwrap().extend([
+            release("widget", "1.1", &[1, 1], 2),
+            release("gadget", "0.1", &[0, 1], 3),
+        ]);
+        dig_once().await.unwrap();
+
+        let log = received.lock().unwrap().join("\n");
+        assert_eq!(
+            log.matches("MAIL FROM:<delve@example.test>").count(),
+            2,
+            "{log}"
+        );
+        assert_eq!(
+            log.matches("RCPT TO:<ops@example.test>").count(),
+            2,
+            "{log}"
+        );
+        assert!(
+            log.contains("Subject: [delve] Firmware updated: acme widget 1.0 -> 1.1"),
+            "{log}"
+        );
+        assert!(
+            log.contains("Subject: [delve] New firmware: acme gadget 0.1"),
+            "{log}"
+        );
     }
 
     #[tokio::test]
