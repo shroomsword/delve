@@ -499,9 +499,29 @@ pub enum CircuitIsolation {
   `socks` feature, using `socks5h://` (not `socks5://`) so DNS resolution
   happens over Tor too — otherwise the hostname being scraped leaks via a
   local DNS query, defeating a good chunk of the point. An embedded,
-  daemon-free option (`arti-client`) is a documented future possibility
-  but not implemented — its maturity relative to the C `tor`
-  implementation is worth checking again before making it the default.
+  daemon-free option (`arti-client`) is not implemented. `TorMode::Embedded`
+  exists in the types, but building a context with it fails with
+  `TransportError::EmbeddedTorUnavailable` instead of panicking, and the
+  config loader can't select it. Findings from trying it (October 2026,
+  `arti-client` 0.46):
+  - It works: an in-process client bootstrapped in under 4 seconds and
+    fetched `check.torproject.org/api/ip` over HTTPS through a Tor circuit
+    (`IsTor: true`), with no `tor` daemon installed.
+  - It is still a 0.x library with monthly breaking releases, and needs
+    Rust 1.91 or newer.
+  - It can't be added to this workspace as is: `arti-client` depends on
+    `rusqlite`, which links `libsqlite3-sys` 0.34 or newer, while `sqlx` 0.8
+    (used by `delve-store-sqlite`) pins `libsqlite3-sys` 0.30. Cargo allows
+    one crate that links `sqlite3`, so resolution fails. `sqlx` 0.9 allows
+    0.30.1 up to but not including 0.38, which resolves it (checked with
+    `cargo check -p delve-store-sqlite`; the store code compiled unchanged).
+  - The embedding program has to pick the `rustls` crypto provider itself
+    (for example `rustls::crypto::ring::default_provider().install_default()`),
+    or the first TLS use panics.
+  - `ScrapeContext` hands plugins a `reqwest::Client`, which can't use an
+    `arti-client` stream directly. The likely route is an in-process SOCKS5
+    listener backed by `TorClient::connect`, used through the existing
+    `socks5h://` path. That is not built.
 - **Default circuit isolation is `PerVendor`**: balances not looking like
   a single abusive client to any one vendor against exhausting the exit
   node pool with a new circuit on every single request.
