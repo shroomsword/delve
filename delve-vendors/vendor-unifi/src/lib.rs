@@ -291,8 +291,11 @@ inventory::submit! {
 mod tests {
     use super::*;
     use delve_core::context::{HttpClientConfig, RateLimit, SettingValue, Settings};
+    use delve_plugin_testkit::{
+        assert_paced, discover_conforms, discover_skips_malformed_records, metadata_conforms,
+        MockServer, Response,
+    };
     use sha2::{Digest, Sha256};
-    use std::sync::Arc;
 
     fn ctx() -> ScrapeContext {
         ScrapeContext::new(
@@ -331,65 +334,51 @@ mod tests {
     /// A local stand-in for the list API, serving the fixture records. It
     /// applies a `platform` filter the way the real API does, unless
     /// `honor_platform_filter` is false. Returns the plugin pointed at it and
-    /// the query string of every request it received.
-    fn mock_api(honor_platform_filter: bool) -> (UnifiPlugin, Arc<Mutex<Vec<String>>>) {
-        use std::io::{BufRead, BufReader, Write};
+    /// the server, which records every request it received.
+    fn mock_api(honor_platform_filter: bool) -> (UnifiPlugin, MockServer) {
+        mock_api_with(honor_platform_filter, vec![])
+    }
 
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let base: url::Url = format!("http://{}/api/firmware", listener.local_addr().unwrap())
-            .parse()
-            .unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
+    /// Like [`mock_api`], with `extra` records added to the served list —
+    /// for records the plugin can't parse.
+    fn mock_api_with(
+        honor_platform_filter: bool,
+        extra: Vec<serde_json::Value>,
+    ) -> (UnifiPlugin, MockServer) {
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/firmware_list.json")).unwrap();
 
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut lines = BufReader::new(stream.try_clone().unwrap()).lines();
-                let request_line = lines.next().unwrap().unwrap();
-                for line in lines.by_ref() {
-                    if line.unwrap().is_empty() {
-                        break;
-                    }
-                }
+        let server = MockServer::start(move |request| {
+            let url = request.url();
+            let platform = url.query_pairs().find_map(|(k, v)| {
+                (k == "filter")
+                    .then(|| v.strip_prefix("eq~~platform~~").map(String::from))
+                    .flatten()
+            });
 
-                let target = request_line.split_whitespace().nth(1).unwrap();
-                let url = url::Url::parse(&format!("http://mock{target}")).unwrap();
-                seen.lock()
-                    .unwrap()
-                    .push(url.query().unwrap_or("").to_string());
-                let platform = url.query_pairs().find_map(|(k, v)| {
-                    (k == "filter")
-                        .then(|| v.strip_prefix("eq~~platform~~").map(String::from))
-                        .flatten()
-                });
-
-                let firmware: Vec<&serde_json::Value> = fixture["_embedded"]["firmware"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|r| match (&platform, honor_platform_filter) {
-                        (Some(p), true) => r["platform"] == p.as_str(),
-                        _ => true,
-                    })
-                    .collect();
-                let body = serde_json::json!({ "_embedded": { "firmware": firmware } }).to_string();
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
+            let firmware: Vec<&serde_json::Value> = fixture["_embedded"]["firmware"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|r| match (&platform, honor_platform_filter) {
+                    (Some(p), true) => r["platform"] == p.as_str(),
+                    _ => true,
+                })
+                .chain(extra.iter())
+                .collect();
+            Response::json(serde_json::json!({ "_embedded": { "firmware": firmware } }).to_string())
         });
 
         let plugin = UnifiPlugin {
-            api_base: base,
+            api_base: server.url().join("api/firmware").unwrap(),
             ..UnifiPlugin::new()
         };
-        (plugin, requests)
+        (plugin, server)
+    }
+
+    /// Queries of every request the server has received.
+    fn queries(server: &MockServer) -> Vec<String> {
+        server.requests().iter().map(|r| r.query()).collect()
     }
 
     fn platforms(refs: &[FirmwareRef]) -> Vec<&str> {
@@ -400,10 +389,10 @@ mod tests {
 
     #[tokio::test]
     async fn default_discover_makes_one_request_for_every_model() {
-        let (plugin, requests) = mock_api(true);
+        let (plugin, server) = mock_api(true);
         let refs = plugin.discover(&ctx_with_models(None)).await.unwrap();
 
-        let requests = requests.lock().unwrap();
+        let requests = queries(&server);
         assert_eq!(requests.len(), 1);
         assert!(!requests[0].contains("platform"), "{}", requests[0]);
         // Every fixture model except the placeholder `stat` record.
@@ -415,11 +404,11 @@ mod tests {
 
     #[tokio::test]
     async fn models_setting_makes_one_request_per_model_and_tracks_only_those() {
-        let (plugin, requests) = mock_api(true);
+        let (plugin, server) = mock_api(true);
         let ctx = ctx_with_models(models(&["U7PG2", "USMINI", "U7PG2"]));
         let refs = plugin.discover(&ctx).await.unwrap();
 
-        let seen = requests.lock().unwrap().clone();
+        let seen = queries(&server);
         assert_eq!(seen.len(), 2, "one request per distinct model: {seen:?}");
         assert!(seen[0].contains("filter=eq%7E%7Eplatform%7E%7EU7PG2"));
         assert!(seen[1].contains("filter=eq%7E%7Eplatform%7E%7EUSMINI"));
@@ -428,12 +417,12 @@ mod tests {
         // metadata() is still answered from the cache that discover filled.
         let meta = plugin.metadata(&ctx, &refs[0]).await.unwrap();
         assert_eq!(meta.device_family, refs[0].device_family);
-        assert_eq!(requests.lock().unwrap().len(), 2);
+        assert_eq!(server.requests().len(), 2);
     }
 
     #[tokio::test]
     async fn a_server_ignoring_the_model_filter_cant_add_other_models() {
-        let (plugin, _) = mock_api(false);
+        let (plugin, _server) = mock_api(false);
         let refs = plugin
             .discover(&ctx_with_models(models(&["UX"])))
             .await
@@ -443,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_model_with_no_firmware_fails_the_dig() {
-        let (plugin, _) = mock_api(true);
+        let (plugin, _server) = mock_api(true);
         let err = plugin
             .discover(&ctx_with_models(models(&["U7PG2", "U7PG3"])))
             .await
@@ -454,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_empty_or_non_list_models_setting_is_rejected() {
-        let (plugin, requests) = mock_api(true);
+        let (plugin, server) = mock_api(true);
 
         let err = plugin
             .discover(&ctx_with_models(models(&[])))
@@ -468,7 +457,43 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("must be a list"), "{err}");
 
-        assert!(requests.lock().unwrap().is_empty());
+        assert!(server.requests().is_empty());
+    }
+
+    // ---- Conformance: the checks every vendor plugin must pass, from
+    // delve-plugin-testkit. This is the reference for other vendor crates.
+
+    const PACING: std::time::Duration = std::time::Duration::from_millis(200);
+
+    /// A context with a measurable rate limit that tracks three models, so a
+    /// dig makes three requests.
+    fn paced_ctx() -> ScrapeContext {
+        delve_plugin_testkit::context(PACING).with_settings(Settings::from([(
+            "models".to_string(),
+            models(&["U7PG2", "USMINI", "UX"]).unwrap(),
+        )]))
+    }
+
+    #[tokio::test]
+    async fn conforms_to_the_vendor_plugin_contract() {
+        let (plugin, server) = mock_api(true);
+        let ctx = paced_ctx();
+
+        let refs = discover_conforms(&plugin, &ctx).await;
+        metadata_conforms(&plugin, &ctx, &refs).await;
+        assert_paced(&server, PACING, 3);
+    }
+
+    #[tokio::test]
+    async fn conforms_when_the_default_list_includes_unparseable_records() {
+        // Two broken records among the fixture's six trackable ones: one
+        // missing most fields, one that isn't an object at all.
+        let broken = vec![serde_json::json!({ "id": "broken" }), serde_json::json!(7)];
+        let (plugin, _server) = mock_api_with(true, broken);
+        let ctx = delve_plugin_testkit::context(std::time::Duration::ZERO);
+
+        let refs = discover_skips_malformed_records(&plugin, &ctx, 6).await;
+        metadata_conforms(&plugin, &ctx, &refs).await;
     }
 
     fn fixture_records() -> Vec<FirmwareRecord> {

@@ -1,0 +1,16 @@
+[package]
+name = "delve-plugin-testkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Conformance checks and a mock HTTP server for testing delve vendor plugins"
+
+[dependencies]
+delve-core.workspace = true
+url.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+async-trait.workspace = true
+reqwest.workspace = true
+chrono.workspace = true

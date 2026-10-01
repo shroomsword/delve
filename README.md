@@ -80,6 +80,7 @@ Windows x86_64; on Intel macOS the tests are compiled but not run.
 delve-core/            traits, engine, data model — no vendor knowledge
 delve-cli/              binary: config loading, plugin registry, commands
 delve-store-sqlite/     MetadataStore impl against SQLite (schema in migrations/)
+delve-plugin-testkit/   conformance checks and a mock HTTP server for vendor crates' tests
 delve-vendors/
   vendor-cisco/          discover/metadata implemented but unverified — see below
   vendor-unifi/          UniFi network-device firmware, verified against the live API
@@ -195,6 +196,31 @@ trait's signature.
 
 `PluginCapabilities.tos_reviewed` gates whether `dig` will run a vendor at
 all — see [Compliance](#compliance-tos-and-robotstxt).
+
+### Testing a vendor plugin
+
+`delve-plugin-testkit` holds the checks every vendor plugin must pass, so
+each vendor crate is held to the same contract and none needs the network
+in CI. A vendor crate adds it as a **dev-dependency** and calls it from its
+own tests. The checks panic with a message naming the vendor and the broken
+rule, like `assert!`.
+
+A vendor's test builds a `MockServer` that serves its wire format from
+fixtures, points the plugin at it, and creates a context with
+`delve_plugin_testkit::context(interval)`. Then:
+
+| Check | Rule it enforces |
+|---|---|
+| `discover_conforms` | `discover()` succeeds with at least one ref; each ref's `vendor` equals `vendor_id()`, its `device_family` is non-blank, and its `source_url` is unique |
+| `metadata_conforms` | `metadata()` succeeds for every ref; the version is non-blank; an `Opaque` version has no ordinal and an ordinal is never empty; no hardware target is blank |
+| `assert_paced` | `ctx.throttle()` is called before every request: no two requests reach the server closer together than the rate limit (less 20% for jitter). It fails if the plugin made too few requests to tell, so give it several, such as one per model |
+| `discover_skips_malformed_records` | against a server that includes records the plugin can't parse, `discover()` skips them and returns the valid ones instead of failing the dig |
+
+`vendor-unifi`'s tests are the reference: they serve its fixtures from a
+`MockServer` and run all four checks. `vendor-cisco` doesn't use the
+testkit yet, because its `discover`/`metadata` still need the live
+verification described under [Known gaps](#known-gaps), and its OAuth flow
+needs a mock token endpoint first.
 
 ## Data model and identity keys
 
@@ -1017,6 +1043,13 @@ exists because of it, not as a design decision made up front.
   module's *assumed* schema: a passing test here proves the code is
   internally consistent, not that it matches Cisco's real API (see the
   module's doc comment and the "Known gaps" entry on this).
+- **`delve-plugin-testkit`**: the checks themselves, run against a toy
+  plugin that is made to break each rule in turn — wrong vendor id, no
+  refs, an `Opaque` version with an ordinal, a blank hardware target, a
+  plugin that skips `throttle()`, a `discover()` that fails on a bad
+  record, and too few requests to measure pacing — to prove each check
+  fails when it should and passes a conforming plugin. Also the mock
+  server answering from its handler and recording each request.
 - **`delve-vendors/vendor-unifi`**: list/detail parsing and field mapping
   against **real** API records (`src/fixtures/`), skipping a single
   malformed record without failing the rest, dropping records with no
@@ -1025,6 +1058,8 @@ exists because of it, not as a design decision made up front.
   (numeric builds, Cloud Key git-hash builds, pre-releases as Opaque), and
   `metadata()` being served from the discover cache without a request, and
   removing each record as it uses it.
+  The plugin also passes all four testkit conformance checks against a
+  mock server, including with unparseable records in the list.
   `discover` runs against a local mock of the list API: one request by
   default, one request per distinct model with `models` set, dropping
   other models if the server ignores the model filter, and failing on a
@@ -1063,10 +1098,3 @@ part most likely to need fixing once the `// VERIFY:` markers are checked.
 - The dynamic (WASM/`abi_stable`) plugin tier described in
   [Plugin architecture](#plugin-architecture) — intentionally deferred,
   not needed for v1
-- `delve-plugin-testkit` — a conformance-test harness for vendor crates
-  (a mock `ScrapeContext` plus a standard assertion suite). `vendor-cisco`
-  now exists as a first real attempt, so this is worth building against
-  its actual failure modes rather than guessed at up front — but its
-  `discover`/`metadata` are still unverified against a live endpoint (see
-  "Known gaps"), so the harness's assertions would currently only be
-  checking against an unconfirmed assumption of what "correct" looks like
