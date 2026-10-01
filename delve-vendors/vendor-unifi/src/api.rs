@@ -1,0 +1,461 @@
+//! Ubiquiti firmware update API: request URLs, response shapes, and
+//! mapping into `delve_core`'s `FirmwareRef`/`FirmwareMetadata`.
+//!
+//! Unlike `vendor-cisco`'s `api.rs`, everything here was **checked against
+//! live responses** from `https://fw-update.ui.com/api/firmware` (September
+//! 2026), and the fixtures under `fixtures/` are real records copied from
+//! those responses, not hand-written guesses. The API is still
+//! **undocumented** — it's the endpoint UniFi devices and controllers poll
+//! for updates, not a published developer API — so Ubiquiti can change it
+//! without notice. What was confirmed:
+//!
+//! - No authentication is required.
+//! - `filter=eq~~<field>~~<value>` query parameters filter server-side and
+//!   can be repeated (`product`, `channel`, and `platform` all work).
+//! - The default page size is 25; `limit` raises it, and one request with
+//!   a large `limit` returned all ~3,400 `unifi-firmware` release records.
+//!   **`offset` is ignored** — every offset returns the same first page — so
+//!   there is no real pagination. [`LIST_LIMIT`] is set far above the
+//!   current record count and a response that fills it is treated as
+//!   possibly truncated rather than silently accepted.
+//! - `sha256_checksum` is the SHA-256 of the file at `_links.data.href`
+//!   (verified by downloading one image and hashing it).
+//! - `platform` is the device model code (`U7PG2` = UAP-AC-Pro, `USMINI` =
+//!   USW-Flex-Mini, ...). There is no human-readable model name or product
+//!   line in the response.
+//! - `release_date` is present on only a handful of records; `created`
+//!   (upload time) is present on all of them.
+//! - None of the `unifi-firmware` records has a `changelog` link, although
+//!   other Ubiquiti products in the same API do.
+
+use chrono::{DateTime, NaiveDate, Utc};
+use delve_core::model::{FirmwareMetadata, FirmwareRef, VersionKey, VersionScheme};
+use delve_core::plugin::PluginError;
+use serde::Deserialize;
+use url::Url;
+
+use crate::version::parse_unifi_version;
+
+pub const API_BASE: &str = "https://fw-update.ui.com/api/firmware";
+
+/// The only product this plugin tracks for now: firmware for UniFi network
+/// devices (access points, switches, gateways, older Cloud Keys). The API
+/// lists UniFi OS consoles (`unifi-dream`, `unifi-nvr`, `unifi-drive`,
+/// `unifi-cloudkey`), Protect cameras (`uvc`), Access devices and more
+/// under separate product names — see the README's vendor-unifi section.
+pub const PRODUCT: &str = "unifi-firmware";
+
+/// Only the stable release channel is tracked by default. `beta-public`
+/// exists too; see the README's vendor-unifi section for the note on
+/// revisiting beta tracking.
+pub const CHANNEL: &str = "release";
+
+/// Far above the current ~3,400 records. The API has no working
+/// pagination (see this module's doc comment), so a response containing
+/// exactly this many records is treated as possibly truncated.
+pub const LIST_LIMIT: usize = 100_000;
+
+/// The list request for every tracked model, or — with `model` — for just
+/// that one model code (the API's `platform`, e.g. `U7PG2`).
+pub fn list_url(base: &Url, model: Option<&str>) -> Url {
+    let mut url = base.clone();
+    {
+        let mut query = url.query_pairs_mut();
+        query
+            .append_pair("filter", &format!("eq~~product~~{PRODUCT}"))
+            .append_pair("filter", &format!("eq~~channel~~{CHANNEL}"));
+        if let Some(model) = model {
+            query.append_pair("filter", &format!("eq~~platform~~{model}"));
+        }
+        query.append_pair("limit", &LIST_LIMIT.to_string());
+    }
+    url
+}
+
+pub fn api_base() -> Url {
+    Url::parse(API_BASE).expect("API_BASE is a valid URL")
+}
+
+/// One firmware record as the API returns it, both in the list response
+/// and from a record's own `_links.self` URL.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FirmwareRecord {
+    pub id: String,
+    pub product: String,
+    pub channel: String,
+    pub platform: String,
+    pub version: String,
+    pub version_major: u64,
+    pub version_minor: u64,
+    pub version_patch: u64,
+    #[serde(default)]
+    pub version_build: Option<String>,
+    #[serde(default)]
+    pub version_prerelease: Option<String>,
+    pub created: DateTime<Utc>,
+    #[serde(default)]
+    pub release_date: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub sha256_checksum: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<u64>,
+    #[serde(rename = "_links")]
+    pub links: Links,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Links {
+    #[serde(rename = "self")]
+    pub self_link: Link,
+    #[serde(default)]
+    pub data: Option<Link>,
+    #[serde(default)]
+    pub changelog: Option<Link>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Link {
+    pub href: Url,
+}
+
+#[derive(Debug, Deserialize)]
+struct ListResponse {
+    #[serde(rename = "_embedded", default)]
+    embedded: Embedded,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct Embedded {
+    #[serde(default)]
+    firmware: Vec<serde_json::Value>,
+}
+
+/// Result of parsing a list response. Records are parsed one at a time so
+/// that a single record with an unexpected shape is skipped (and reported
+/// in `skipped`) instead of failing the whole dig.
+#[derive(Debug)]
+pub struct ParsedList {
+    pub records: Vec<FirmwareRecord>,
+    pub skipped: Vec<String>,
+    pub total: usize,
+}
+
+pub fn parse_list(body: &str) -> Result<ParsedList, PluginError> {
+    let parsed: ListResponse = serde_json::from_str(body)
+        .map_err(|e| PluginError::Parse(format!("UniFi firmware list: {e}")))?;
+
+    let total = parsed.embedded.firmware.len();
+    let mut records = Vec::with_capacity(total);
+    let mut skipped = Vec::new();
+    for value in parsed.embedded.firmware {
+        let id = value
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<no id>")
+            .to_string();
+        match serde_json::from_value::<FirmwareRecord>(value) {
+            Ok(record) => records.push(record),
+            Err(e) => skipped.push(format!("{id}: {e}")),
+        }
+    }
+
+    // Every record failing to parse means the response shape has changed,
+    // not that a few records are odd — fail loudly instead of reporting an
+    // empty vendor.
+    if total > 0 && records.is_empty() {
+        return Err(PluginError::Parse(format!(
+            "none of the {total} UniFi firmware records matched the expected shape; first error: {}",
+            skipped.first().map(String::as_str).unwrap_or("")
+        )));
+    }
+
+    Ok(ParsedList {
+        records,
+        skipped,
+        total,
+    })
+}
+
+pub fn parse_detail(body: &str) -> Result<FirmwareRecord, PluginError> {
+    serde_json::from_str(body)
+        .map_err(|e| PluginError::Parse(format!("UniFi firmware record: {e}")))
+}
+
+/// Narrows parsed records to the ones this plugin tracks, and makes each
+/// identity key unique.
+///
+/// - Re-checks `product` and `channel` even though the request already
+///   filters on them, so a server that ignored the filter can't flood the
+///   store with other products or beta builds.
+/// - Drops records with no downloadable file (one placeholder record,
+///   `platform: "stat"`, has neither a file nor a hash).
+/// - Keeps only the newest record per `(platform, version)`. The store's
+///   identity key is `(vendor, device_family, hardware_targets, version)`,
+///   and two records sharing it would overwrite each other on every dig,
+///   flip-flopping between them and firing a spurious "rebuilt" event each
+///   time. None exist in the release channel today, but beta and release
+///   copies of one version do, so this matters once beta is tracked.
+pub fn select_records(records: Vec<FirmwareRecord>) -> Vec<FirmwareRecord> {
+    let mut selected: Vec<FirmwareRecord> = Vec::with_capacity(records.len());
+    let mut index: std::collections::HashMap<(String, String), usize> =
+        std::collections::HashMap::new();
+
+    for record in records {
+        if record.product != PRODUCT || record.channel != CHANNEL || record.links.data.is_none() {
+            continue;
+        }
+        let key = (record.platform.clone(), record.version.clone());
+        match index.get(&key) {
+            Some(&i) => {
+                tracing::warn!(
+                    platform = %record.platform,
+                    version = %record.version,
+                    "UniFi API returned more than one record for the same model and version; keeping the newest"
+                );
+                if record.created > selected[i].created {
+                    selected[i] = record;
+                }
+            }
+            None => {
+                index.insert(key, selected.len());
+                selected.push(record);
+            }
+        }
+    }
+    selected
+}
+
+/// `device_family` and `hardware_targets` are both the model code for
+/// now. See the README's vendor-unifi section for the planned move to
+/// product-line families (`USW`, `UXG`, `U7`, `U6`, ...).
+pub fn record_to_ref(record: &FirmwareRecord, vendor: &str) -> FirmwareRef {
+    FirmwareRef {
+        vendor: vendor.to_string(),
+        device_family: record.platform.clone(),
+        source_url: record.links.self_link.href.clone(),
+        discovered_at: Utc::now(),
+    }
+}
+
+pub fn record_to_metadata(record: &FirmwareRecord, vendor: &str) -> FirmwareMetadata {
+    let version = match parse_unifi_version(record) {
+        Some(ordinal) => VersionKey {
+            raw: record.version.clone(),
+            scheme: VersionScheme::VendorNumeric,
+            ordinal: Some(ordinal),
+        },
+        None => VersionKey::opaque(record.version.clone()),
+    };
+
+    FirmwareMetadata {
+        // vendor/device_family/source_url are overwritten by the engine
+        // from the originating FirmwareRef; set to matching values anyway
+        // so this is correct when called outside the engine too.
+        vendor: vendor.to_string(),
+        device_family: record.platform.clone(),
+        source_url: record.links.self_link.href.clone(),
+        version,
+        release_date: Some(release_date(record)),
+        sha256: record.sha256_checksum.as_deref().and_then(decode_sha256),
+        signature: None,
+        hardware_targets: vec![record.platform.clone()],
+        release_notes_url: record.links.changelog.as_ref().map(|l| l.href.clone()),
+    }
+}
+
+/// The explicit `release_date` when the API has one, otherwise the upload
+/// time. For the release channel the two are close (3-10 days apart on
+/// the records that have both), but `created` is when the file was
+/// uploaded, not necessarily when it was published.
+fn release_date(record: &FirmwareRecord) -> NaiveDate {
+    record.release_date.unwrap_or(record.created).date_naive()
+}
+
+/// Decodes a 64-character hex SHA-256. Anything else becomes `None`: a
+/// wrong hash would make `unearth`'s default verification fail real
+/// downloads, which is worse than having no hash to check.
+pub fn decode_sha256(hex: &str) -> Option<[u8; 32]> {
+    let bytes = hex.as_bytes();
+    if bytes.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, pair) in bytes.chunks(2).enumerate() {
+        let s = std::str::from_utf8(pair).ok()?;
+        out[i] = u8::from_str_radix(s, 16).ok()?;
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Real records copied from live API responses (see the module doc
+    // comment), trimmed to a representative handful.
+    const LIST_FIXTURE: &str = include_str!("fixtures/firmware_list.json");
+    const DETAIL_FIXTURE: &str = include_str!("fixtures/firmware_detail.json");
+
+    fn fixture_records() -> Vec<FirmwareRecord> {
+        parse_list(LIST_FIXTURE).unwrap().records
+    }
+
+    fn record(platform: &str) -> FirmwareRecord {
+        fixture_records()
+            .into_iter()
+            .find(|r| r.platform == platform)
+            .unwrap_or_else(|| panic!("fixture has no {platform} record"))
+    }
+
+    #[test]
+    fn list_url_filters_on_product_and_release_channel() {
+        let url = list_url(&api_base(), None).to_string();
+        assert!(url.starts_with(API_BASE));
+        assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-firmware"));
+        assert!(url.contains("filter=eq%7E%7Echannel%7E%7Erelease"));
+        assert!(!url.contains("platform"));
+        assert!(url.contains("limit=100000"));
+    }
+
+    #[test]
+    fn list_url_for_one_model_adds_a_platform_filter() {
+        let url = list_url(&api_base(), Some("U7PG2")).to_string();
+        assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-firmware"));
+        assert!(url.contains("filter=eq%7E%7Echannel%7E%7Erelease"));
+        assert!(url.contains("filter=eq%7E%7Eplatform%7E%7EU7PG2"));
+    }
+
+    #[test]
+    fn parses_every_fixture_record() {
+        let parsed = parse_list(LIST_FIXTURE).unwrap();
+        assert_eq!(parsed.total, 7);
+        assert_eq!(parsed.records.len(), 7);
+        assert!(parsed.skipped.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_record_is_skipped_not_fatal() {
+        let body = r#"{"_embedded": {"firmware": [
+            {"id": "broken", "product": "unifi-firmware"},
+            {"id": "a", "product": "unifi-firmware", "channel": "release", "platform": "US8",
+             "version": "v1.0.0+1", "version_major": 1, "version_minor": 0, "version_patch": 0,
+             "created": "2024-01-01T00:00:00Z",
+             "_links": {"self": {"href": "https://fw-update.ui.com/api/firmware/a"}}}
+        ]}}"#;
+        let parsed = parse_list(body).unwrap();
+        assert_eq!(parsed.records.len(), 1);
+        assert_eq!(parsed.skipped.len(), 1);
+        assert!(parsed.skipped[0].starts_with("broken:"));
+    }
+
+    #[test]
+    fn every_record_malformed_is_an_error() {
+        let body = r#"{"_embedded": {"firmware": [{"id": "x"}, {"id": "y"}]}}"#;
+        assert!(matches!(parse_list(body), Err(PluginError::Parse(_))));
+    }
+
+    #[test]
+    fn empty_and_non_json_responses() {
+        assert_eq!(parse_list(r#"{"_links": {}}"#).unwrap().records.len(), 0);
+        assert!(matches!(
+            parse_list("<html>nope</html>"),
+            Err(PluginError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn detail_response_parses_as_a_single_record() {
+        let r = parse_detail(DETAIL_FIXTURE).unwrap();
+        assert_eq!(r.platform, "USMINI");
+        assert_eq!(r.version, "v1.6.3+574");
+        assert_eq!(r.file_size, Some(502_064));
+    }
+
+    #[test]
+    fn maps_a_record_to_metadata() {
+        let meta = record_to_metadata(&record("USMINI"), "unifi");
+        assert_eq!(meta.device_family, "USMINI");
+        assert_eq!(meta.hardware_targets, vec!["USMINI".to_string()]);
+        assert_eq!(meta.version.raw, "v1.6.3+574");
+        assert_eq!(meta.version.ordinal, Some(vec![1, 6, 3, 574]));
+        assert!(matches!(meta.version.scheme, VersionScheme::VendorNumeric));
+        assert_eq!(
+            meta.source_url.as_str(),
+            "https://fw-update.ui.com/api/firmware/a4fb8871-1951-43bb-9db3-5d8a62e26e3d"
+        );
+        assert_eq!(meta.release_date, NaiveDate::from_ymd_opt(2020, 2, 14));
+        assert_eq!(meta.release_notes_url, None);
+        // Verified against the real downloaded file during development.
+        assert_eq!(
+            meta.sha256,
+            decode_sha256("0af65245ffccc1daf964ce92a63de40f152d42d7d63e50994607e4bb5bcc43ee")
+        );
+        assert!(meta.sha256.is_some());
+    }
+
+    #[test]
+    fn prefers_the_explicit_release_date_over_upload_time() {
+        let r = record("UX");
+        assert_eq!(
+            r.created.date_naive(),
+            NaiveDate::from_ymd_opt(2026, 6, 3).unwrap()
+        );
+        let meta = record_to_metadata(&r, "unifi");
+        assert_eq!(meta.release_date, NaiveDate::from_ymd_opt(2026, 6, 7));
+    }
+
+    #[test]
+    fn ref_points_at_the_records_own_api_url() {
+        let r = record("U7PG2");
+        let fref = record_to_ref(&r, "unifi");
+        assert_eq!(fref.vendor, "unifi");
+        assert_eq!(fref.device_family, "U7PG2");
+        assert_eq!(fref.source_url, r.links.self_link.href);
+    }
+
+    #[test]
+    fn selection_drops_the_placeholder_record_with_no_file() {
+        let selected = select_records(fixture_records());
+        assert_eq!(selected.len(), 6);
+        assert!(selected.iter().all(|r| r.platform != "stat"));
+    }
+
+    #[test]
+    fn selection_drops_other_products_and_channels() {
+        let mut records = fixture_records();
+        records[0].channel = "beta-public".to_string();
+        records[1].product = "unifi-dream".to_string();
+        let selected = select_records(records);
+        assert_eq!(selected.len(), 4);
+    }
+
+    #[test]
+    fn selection_keeps_only_the_newest_duplicate_of_a_model_and_version() {
+        let newer = record("U7PG2");
+        let mut older = newer.clone();
+        older.id = "older".to_string();
+        older.created = newer.created - chrono::Duration::days(30);
+
+        let selected = select_records(vec![older.clone(), newer.clone()]);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, newer.id);
+
+        // Same result regardless of the order the API returns them in.
+        let selected = select_records(vec![newer.clone(), older]);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].id, newer.id);
+    }
+
+    #[test]
+    fn decodes_valid_sha256_and_rejects_anything_else() {
+        let hex = "0af65245ffccc1daf964ce92a63de40f152d42d7d63e50994607e4bb5bcc43ee";
+        let bytes = decode_sha256(hex).unwrap();
+        assert_eq!(bytes[0], 0x0a);
+        assert_eq!(bytes[31], 0xee);
+        assert_eq!(decode_sha256(""), None);
+        assert_eq!(decode_sha256(&hex[..62]), None);
+        assert_eq!(decode_sha256(&hex.replace('a', "z")), None);
+        // An MD5 is not a SHA-256.
+        assert_eq!(decode_sha256("325eb7e2f3f840fcabdb163ec1d2c23f"), None);
+    }
+}

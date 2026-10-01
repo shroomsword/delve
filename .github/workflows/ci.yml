@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - initial-development
+  workflow_call:
+
+permissions:
+  contents: read
+
+# Cancel an in-progress run when a newer commit lands on the same PR. Runs on the
+# default branch are never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Format check
+        run: cargo fmt --all --check
+
+      # --all-features so feature-gated code (vendor-cisco, subscriber-webhook) is
+      # linted too, not just the default build.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny
+
+      # Checks Cargo.lock against the RustSec advisory database. A newly published
+      # advisory can fail this step on an unrelated PR; that is an unexpected CI
+      # failure and is reported, not suppressed.
+      - name: Dependency advisories
+        run: cargo deny --locked check advisories
+
+  # Same platforms as the build matrix below. Keep the two matrices in sync.
+  test:
+    name: test (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            native: true
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            native: true
+          # The runner is Apple Silicon, so this variant compiles the tests but
+          # cannot execute them.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            native: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            native: true
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: test-${{ matrix.target }}
+
+      # Native variants run unit, integration, and doc tests on the host. The
+      # cross-compiled variant only compiles them (--no-run), which still catches
+      # platform-specific compile errors in test code.
+      - name: Test
+        env:
+          TARGET: ${{ matrix.target }}
+          NATIVE: ${{ matrix.native }}
+        run: |
+          set -euo pipefail
+          if [[ "$NATIVE" == "true" ]]; then
+            cargo test --workspace --all-features --locked
+          else
+            cargo test --workspace --all-features --locked --target "$TARGET" --no-run
+          fi
+
+  # One variant per shipped platform. Keep this matrix in sync with the test matrix.
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          # Cross-compiled on the Apple Silicon runner; the macOS SDK supports both
+          # architectures.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: build-${{ matrix.target }}
+
+      - name: Build (release profile)
+        run: cargo build --workspace --all-features --release --locked --target ${{ matrix.target }}
+
+      # Checks the minimum supported Rust version declared in Cargo.toml, if any.
+      # Only the library and binary targets are checked, because dev-dependencies
+      # may legitimately require a newer compiler. Run once, on Linux.
+      - name: MSRV check
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          msrv=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '[.packages[].rust_version | select(. != null)] | max // empty')
+          if [[ -z "$msrv" ]]; then
+            echo "No rust-version declared; skipping MSRV check"
+            exit 0
+          fi
+          echo "Checking MSRV ${msrv}"
+          rustup toolchain install "$msrv" --profile minimal
+          cargo "+${msrv}" check --workspace --all-features --locked
+
+  doc:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Documentation
+        run: cargo doc --workspace --all-features --no-deps --locked
+
+  # Aggregate result. This is the only check the default-branch ruleset requires.
+  ci:
+    if: always()
+    needs: [lint, test, build, doc]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        env:
+          FAILED: >-
+            ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+            || contains(needs.*.result, 'skipped') }}
+        run: |
+          if [[ "$FAILED" == "true" ]]; then
+            echo "::error::One or more CI jobs did not succeed"
+            exit 1
+          fi

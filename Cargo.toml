@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "delve-core",
+    "delve-cli",
+    "delve-store-sqlite",
+    "delve-vendors/vendor-cisco",
+    "delve-vendors/vendor-unifi",
+    "delve-subscribers/subscriber-log",
+    "delve-subscribers/subscriber-webhook",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+# Shared versions so every crate in the workspace pulls the same one.
+# Individual crates reference these with `workspace = true`.
+[workspace.dependencies]
+delve-core = { path = "delve-core" }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+url = { version = "2", features = ["serde"] }
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "socks", "rustls-tls", "gzip"] }
+inventory = "0.3"
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+futures = "0.3"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
+anyhow = "1"
+sha2 = "0.10"
