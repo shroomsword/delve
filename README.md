@@ -634,7 +634,16 @@ vendor — see [Baseline vs incremental digs](#baseline-vs-incremental-digs).
 delve dig                          # all enabled vendors
 delve dig --vendor cisco           # just one vendor
 delve dig --vendor cisco --redig   # clear cisco's baseline first, then dig fresh
+delve dig --vendor cisco --allow-unreviewed   # dev only: run despite tos_reviewed: false
 ```
+
+`--allow-unreviewed` is a deliberate escape hatch for exercising a plugin's
+`discover`/`metadata` against a real site before its ToS review is recorded.
+It logs a loud warning, writes to the real store like any other dig, and
+only works together with `--vendor` (the command errors otherwise), so an
+unfiltered or scheduled `dig` can never pick it up. It doesn't change what
+the plugin reports for `tos_reviewed` — read the vendor's ToS and
+`robots.txt` first, as described in [Compliance](#compliance-tos-and-robotstxt).
 
 ### `catalog`
 
@@ -756,9 +765,8 @@ code: `dig` skips any vendor whose plugin reports `tos_reviewed: false`
 entirely, rather than running it and hoping someone remembers to check
 first. `vendor-cisco` deliberately leaves this `false` — see its doc
 comment — until Cisco's actual robots.txt and ToS have been read.
-There's currently no way to exercise `discover`/`metadata` against a real
-site while the flag is `false` short of temporarily flipping it, which is
-its own small gap — see [Known gaps](#known-gaps).
+To exercise `discover`/`metadata` against a real site while the flag is
+`false`, use `dig --vendor <id> --allow-unreviewed` (see [`dig`](#dig)).
 
 ## Vendor: UniFi
 
@@ -944,9 +952,8 @@ than a generic "history" would have been.
    [Compliance](#compliance-tos-and-robotstxt) (`vendor-unifi`'s review is
    recorded in [Vendor: UniFi](#vendor-unifi)). Don't flip
    `vendor-cisco`'s flag without actually reading Cisco's robots.txt and
-   ToS first. There's also still no dev escape hatch for exercising
-   `discover`/`metadata` against a real site while the flag is `false` —
-   right now `dig` hard-skips, rather than warn-and-continue.
+   ToS first. To exercise `discover`/`metadata` against a real site while
+   the flag is `false`, use `dig --vendor cisco --allow-unreviewed`.
 
 ## Test coverage
 

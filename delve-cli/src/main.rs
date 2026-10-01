@@ -27,9 +27,11 @@ async fn main() -> anyhow::Result<()> {
     let registry = delve_core::plugin::PluginRegistry::discover();
 
     match cli.command {
-        Command::Dig { vendor, redig } => {
-            commands::dig::run(&config, &registry, &store, vendor, redig).await
-        }
+        Command::Dig {
+            vendor,
+            redig,
+            allow_unreviewed,
+        } => commands::dig::run(&config, &registry, &store, vendor, redig, allow_unreviewed).await,
         Command::Catalog { selector, long } => {
             commands::catalog::run(&store, selector, long, &mut std::io::stdout().lock()).await
         }
