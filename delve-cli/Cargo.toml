@@ -13,6 +13,7 @@ delve-core.workspace = true
 delve-store-sqlite = { path = "../delve-store-sqlite" }
 subscriber-log = { path = "../delve-subscribers/subscriber-log" }
 subscriber-webhook = { path = "../delve-subscribers/subscriber-webhook", optional = true }
+subscriber-email = { path = "../delve-subscribers/subscriber-email", optional = true }
 vendor-cisco = { path = "../delve-vendors/vendor-cisco", optional = true }
 vendor-unifi = { path = "../delve-vendors/vendor-unifi", optional = true }
 
@@ -33,6 +34,7 @@ default = []
 vendor-cisco = ["dep:vendor-cisco"]
 vendor-unifi = ["dep:vendor-unifi"]
 subscriber-webhook = ["dep:subscriber-webhook"]
+subscriber-email = ["dep:subscriber-email"]
 all-vendors = ["vendor-cisco", "vendor-unifi"]
 
 [dev-dependencies]

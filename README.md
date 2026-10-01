@@ -87,6 +87,7 @@ delve-vendors/
 delve-subscribers/
   subscriber-log/        always-on audit-trail subscriber
   subscriber-webhook/     POSTs events to a configured URL, feature-gated
+  subscriber-email/       sends one email per event over SMTP, feature-gated
 ```
 
 `delve-store-sqlite` is its own crate rather than folded into `delve-core`,
@@ -94,10 +95,10 @@ so `delve-core` doesn't pull in `sqlx` as a dependency — anything
 implementing `MetadataStore` against a different backend later only needs
 to depend on `delve-core`.
 
-Build the CLI with a vendor and the webhook subscriber:
+Build the CLI with a vendor and the webhook and email subscribers:
 
 ```
-cargo build --features "vendor-cisco,subscriber-webhook" -p delve-cli
+cargo build --features "vendor-cisco,subscriber-webhook,subscriber-email" -p delve-cli
 ```
 
 `--features all-vendors` enables every vendor crate.
@@ -648,8 +649,8 @@ pub enum FirmwareEvent {
 
 - Built-in subscribers are feature-gated crates under `delve-subscribers/`:
   `subscriber-log` (always on — an audit trail independent of whether
-  webhook/email delivery succeeds) and `subscriber-webhook` (POSTs a JSON
-  payload).
+  webhook/email delivery succeeds), `subscriber-webhook` (POSTs a JSON
+  payload) and `subscriber-email` (see [Email](#email)).
 - Fan-out is concurrent; one slow or broken subscriber never blocks
   another — failures are logged and swallowed at the bus level, since a
   webhook being down shouldn't fail the whole dig.
@@ -663,6 +664,107 @@ pub enum FirmwareEvent {
   hardware-target list) is currently hardcoded to hash-or-version, since
   that's what's unambiguously notification-worthy by default; widening
   this to a config knob is a reasonable future addition, not yet built.
+
+
+### Email
+
+`subscriber-email` sends a plain-text message over SMTP for each event,
+built with the `subscriber-email` Cargo feature and configured under
+`[subscribers.email]`:
+
+```toml
+[subscribers.email]
+host = "smtp.example.com"
+port = 587                              # default for the tls mode: 587, 465, or 25
+tls = "starttls"                        # "starttls" (default) | "implicit" | "none"
+from = "Delve <delve@example.com>"      # a bare address or "Name <address>"
+to = ["ops@example.com", "sec@example.com"]
+username = "delve"                      # username and password go together, or neither
+password = "env:DELVE_SMTP_PASSWORD"    # "env:VAR_NAME" reads the environment, like vendor credentials
+```
+
+- `host`, `from` and `to` are required. Unknown fields are rejected, so a
+  mistyped `passwrod` is an error and not a silently unauthenticated send.
+- `tls = "starttls"` upgrades the connection and **fails** if the server
+  won't, rather than falling back to plain text. `"implicit"` is TLS from
+  the first byte (port 465). `"none"` is for a local relay only: credentials
+  and messages cross the network in the clear.
+- The subject names what happened, for example `[delve] New firmware: acme
+  widget 1.0`, `[delve] Firmware updated: acme widget 1.0 -> 1.1`, or
+  `[delve] Firmware DOWNGRADED: ...` when `version_direction` is `Older`. A
+  rebuild under the same version says so. The body lists the vendor, device
+  family, hardware, version, release date, SHA-256, source and release-notes
+  URLs, and for updates the changed fields. The subject is one line, with
+  control characters from vendor data replaced by spaces.
+- A bad address, a half-set login, or an unset `env:` variable fails the
+  `dig` at startup instead of running without the notifications you asked
+  for. A server that is down fails only that message: the failure is logged
+  and the dig carries on, like any other subscriber.
+- **One email per event, no batching.** A dig that finds many releases at
+  once sends many emails. A vendor's first dig is a silent baseline, so this
+  mostly happens after adding models to a vendor without running
+  `dig --vendor <id> --redig` once (see [Tracking only some
+  models](#tracking-only-some-models)), or when a vendor publishes many
+  releases at once.
+- Without the Cargo feature, a `[subscribers.email]` section still parses
+  but `dig` only logs a warning that it isn't compiled in.
+
+#### Choosing an email service
+
+Delve doesn't send mail itself and ships no sending account, so each person
+running it supplies SMTP credentials. Use a service built for sending
+program-generated mail, with credentials that can only send, and not a
+personal mailbox (Gmail and Outlook need app passwords or OAuth, and are the
+wrong fit for automated mail). Keep the secrets in environment variables with
+`env:`. Providers generally require you to verify the `from` address or
+domain before they will send, so follow the provider's setup guide for that.
+
+The settings below come from each provider's documentation (checked October
+2026). Delve's tests never send through any of them, so try one message
+before relying on it.
+
+**Postmark**: the Server API Token is both the username and the password.
+
+```toml
+[subscribers.email]
+host = "smtp.postmarkapp.com"
+port = 587                              # STARTTLS only; 25 and 2525 also work
+from = "delve@example.com"
+to = ["ops@example.com"]
+username = "env:POSTMARK_SERVER_TOKEN"
+password = "env:POSTMARK_SERVER_TOKEN"
+```
+
+**Resend**: the username is the literal `resend` and the password is an API key.
+
+```toml
+[subscribers.email]
+host = "smtp.resend.com"
+port = 587                              # or tls = "implicit" with port 465
+from = "delve@example.com"
+to = ["ops@example.com"]
+username = "resend"
+password = "env:RESEND_API_KEY"
+```
+
+**Amazon SES**: the endpoint and the credentials are specific to one AWS
+region.
+
+```toml
+[subscribers.email]
+host = "email-smtp.us-east-1.amazonaws.com"   # your region's SMTP endpoint
+port = 587                                    # or tls = "implicit" with port 465
+from = "delve@example.com"
+to = ["ops@example.com"]
+username = "env:SES_SMTP_USERNAME"
+password = "env:SES_SMTP_PASSWORD"
+```
+
+Create the credentials in the SES console under "SMTP settings" > "Create
+SMTP credentials". The SMTP password is derived for you and is not your AWS
+secret access key. A new SES account starts in a sandbox that only sends to
+verified addresses (at most 200 messages a day and 1 a second) until you
+request production access.
 
 ## CLI commands
 
@@ -784,6 +886,11 @@ cisco = 3000                                     # cisco's robots.txt specifies 
 
 [subscribers.webhook]
 url = "https://example.com/hooks/delve"
+
+[subscribers.email]                              # needs the subscriber-email feature; see "Email"
+host = "smtp.example.com"
+from = "delve@example.com"
+to = ["ops@example.com"]
 ```
 
 Every field is optional; the framework falls back to a sensible default
@@ -1070,6 +1177,16 @@ exists because of it, not as a design decision made up front.
   record, and too few requests to measure pacing — to prove each check
   fails when it should and passes a conforming plugin. Also the mock
   server answering from its handler and recording each request.
+- **`delve-subscribers/subscriber-email`**: the subject and body for each
+  event kind (new, updated newer/older/unordered, same-version rebuild), a
+  newline in vendor data not being able to add header lines, address and
+  recipient validation, a message reaching every recipient through a stub
+  transport, and real SMTP: a fake in-process server receiving the right
+  envelope, subject and body, and a server that is down giving a delivery
+  error. `delve-cli`: `[subscribers.email]` parsing (defaults, each `tls`
+  mode, unknown fields rejected), `env:` resolution and half-set logins,
+  and a real `dig` against a mock vendor whose releases change, mailing
+  one message per event and nothing on the baseline.
 - **`delve-vendors/vendor-unifi`**: list/detail parsing and field mapping
   against **real** API records (`src/fixtures/`), skipping a single
   malformed record without failing the rest, dropping records with no
@@ -1113,8 +1230,6 @@ part most likely to need fixing once the `// VERIFY:` markers are checked.
 
 ## Not yet scaffolded
 
-- `subscriber-email` — no crate here yet, copy `subscriber-webhook`'s
-  shape when needed
 - The dynamic (WASM/`abi_stable`) plugin tier described in
   [Plugin architecture](#plugin-architecture) — intentionally deferred,
   not needed for v1
