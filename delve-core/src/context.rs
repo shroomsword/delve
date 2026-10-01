@@ -39,10 +39,10 @@ pub enum TorMode {
     /// (127.0.0.1:9050 typically). The current approach — see the
     /// README's "Transport and proxying" section.
     ExternalDaemon { socks_addr: SocketAddr },
-    /// Embed Tor in-process via `arti-client`. Not implemented in this
-    /// scaffold; `arti-client` maturity is worth checking again before
-    /// making it the default (see the README's "Transport and proxying"
-    /// section).
+    /// Embed Tor in-process via `arti-client`. Not implemented:
+    /// `ScrapeContext::new` fails with
+    /// [`TransportError::EmbeddedTorUnavailable`] for this mode (see the
+    /// README's "Transport and proxying" section).
     Embedded,
 }
 
@@ -63,6 +63,14 @@ pub enum CircuitIsolation {
 pub enum TransportError {
     #[error("failed to build HTTP client: {0}")]
     ClientBuild(#[from] reqwest::Error),
+    /// `TorMode::Embedded` has no implementation behind it. Returned
+    /// instead of panicking so that selecting it can only ever fail a dig
+    /// with a message, never crash the process.
+    #[error(
+        "embedded Tor (arti-client) is not implemented; use TorMode::ExternalDaemon with a \
+         running `tor` daemon's SOCKS port instead"
+    )]
+    EmbeddedTorUnavailable,
 }
 
 /// The framework-wide default: `delve/<version>` with no contact info. This
@@ -303,11 +311,11 @@ impl ScrapeContext {
                     let proxy = reqwest::Proxy::all(format!("socks5h://{socks_addr}"))?;
                     builder.proxy(proxy).build()?
                 }
-                TorMode::Embedded => {
-                    // arti-client integration not yet implemented — see the
-                    // README's "Transport and proxying" section.
-                    unimplemented!("embedded Tor via arti-client is not yet wired up")
-                }
+                // arti-client integration is not implemented — see the
+                // README's "Transport and proxying" section. An error, not a
+                // panic: nothing can select this mode today, but whatever
+                // gains the ability to must not be able to crash a run.
+                TorMode::Embedded => return Err(TransportError::EmbeddedTorUnavailable),
             },
         };
         Ok(client)
@@ -458,6 +466,31 @@ mod tests {
             result.is_ok(),
             "a well-formed HttpClientConfig must not fail client construction"
         );
+    }
+
+    #[test]
+    fn embedded_tor_is_a_clear_error_not_a_panic() {
+        let transport = Transport::Tor(TorConfig {
+            mode: TorMode::Embedded,
+            circuit_isolation: CircuitIsolation::default(),
+        });
+        let result = ScrapeContext::new(
+            transport,
+            Credentials::new(),
+            HttpClientConfig::default(),
+            RateLimit::default(),
+        );
+
+        let Err(err) = result else {
+            panic!("embedded Tor is not implemented, so building a context must fail");
+        };
+        assert!(
+            matches!(err, TransportError::EmbeddedTorUnavailable),
+            "{err}"
+        );
+        let message = err.to_string();
+        assert!(message.contains("embedded Tor"), "{message}");
+        assert!(message.contains("ExternalDaemon"), "{message}");
     }
 
     #[test]
