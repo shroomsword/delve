@@ -1037,11 +1037,13 @@ exists because of it, not as a design decision made up front.
   whose releases change between digs, so nothing touches the network.
   `dig`: the silent baseline, `NewRelease`/`UpdatedRelease` (version bump
   and same-version rebuild), `--redig`, skipping vendors without
-  `tos_reviewed`, `--vendor` and `[vendors].enabled` narrowing, and
+  `tos_reviewed` (and `--allow-unreviewed` running a named one, but never
+  an unfiltered dig), `--vendor` and `[vendors].enabled` narrowing, and
   unknown/no-vendor errors. `catalog`: the default table and `--long`
-  output, each selector flag, and `--latest` ordering numerically.
-  `provenance`: one line per observation in order, and ambiguous or
-  unmatched selectors failing.
+  output, each selector flag, `--latest` ordering numerically, and the
+  printed ids addressing exactly one entry. `provenance`: one line per
+  observation in order, `--id` alone resolving the entry (and an unknown
+  id failing), and ambiguous or unmatched selectors failing.
 
 Not yet covered: `unearth.rs` beyond `FileSink` (resolution, context
 building), which is mostly wiring. `vendor-cisco`'s actual HTTP
