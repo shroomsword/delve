@@ -4,6 +4,7 @@ members = [
     "delve-core",
     "delve-cli",
     "delve-store-sqlite",
+    "delve-plugin-testkit",
     "delve-vendors/vendor-cisco",
     "delve-vendors/vendor-unifi",
     "delve-subscribers/subscriber-log",
@@ -19,6 +20,7 @@ license = "MIT OR Apache-2.0"
 # Individual crates reference these with `workspace = true`.
 [workspace.dependencies]
 delve-core = { path = "delve-core" }
+delve-plugin-testkit = { path = "delve-plugin-testkit" }
 
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
 async-trait = "0.1"
