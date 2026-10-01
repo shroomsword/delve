@@ -19,7 +19,9 @@
 //! and tracks only those models. Either way it caches the full records in
 //! memory, keyed by each record's own API URL (the `FirmwareRef::source_url`
 //! it hands back). `metadata()` then answers from that cache without a request of
-//! its own. Only a cache miss — `metadata()` called without a preceding
+//! its own, and removes each record as it does, so the cache shrinks as the
+//! dig stores entries instead of holding every record until the process
+//! exits. Only a cache miss — `metadata()` called without a preceding
 //! `discover()` in this process — falls back to fetching the record's own
 //! URL. `fetch()` usually runs in a fresh `unearth` process with an empty
 //! cache, so it costs two requests: the record, then the file.
@@ -46,7 +48,8 @@ pub struct UnifiPlugin {
     api_base: url::Url,
     /// Records from the most recent `discover()`, keyed by
     /// `FirmwareRef::source_url`. Replaced wholesale on every discover so
-    /// records Ubiquiti has removed don't linger.
+    /// records Ubiquiti has removed don't linger. `metadata()` takes each
+    /// record out as it uses it (see `record_for`).
     cache: Mutex<HashMap<String, FirmwareRecord>>,
 }
 
@@ -121,22 +124,30 @@ impl UnifiPlugin {
         Ok((records, total))
     }
 
-    fn cached(&self, source_url: &url::Url) -> Option<FirmwareRecord> {
-        self.cache
-            .lock()
-            .expect("cache lock poisoned")
-            .get(source_url.as_str())
-            .cloned()
+    /// The cached record for `source_url`. With `consume`, the record is
+    /// removed from the cache, so a later lookup for it misses.
+    fn cached(&self, source_url: &url::Url, consume: bool) -> Option<FirmwareRecord> {
+        let mut cache = self.cache.lock().expect("cache lock poisoned");
+        if consume {
+            cache.remove(source_url.as_str())
+        } else {
+            cache.get(source_url.as_str()).cloned()
+        }
     }
 
     /// The record behind `r`, from the cache if `discover()` already saw it,
     /// otherwise from the record's own API URL.
+    ///
+    /// `consume` removes the record from the cache. `metadata()` passes
+    /// `true`: the engine calls it once per ref, so the record is no longer
+    /// needed afterwards. `fetch()` passes `false` and leaves the cache alone.
     async fn record_for(
         &self,
         ctx: &ScrapeContext,
         r: &FirmwareRef,
+        consume: bool,
     ) -> Result<FirmwareRecord, PluginError> {
-        if let Some(record) = self.cached(&r.source_url) {
+        if let Some(record) = self.cached(&r.source_url, consume) {
             return Ok(record);
         }
         let body = get_text(ctx, r.source_url.as_str()).await?;
@@ -216,7 +227,7 @@ impl VendorPlugin for UnifiPlugin {
         ctx: &ScrapeContext,
         r: &FirmwareRef,
     ) -> Result<FirmwareMetadata, PluginError> {
-        let record = self.record_for(ctx, r).await?;
+        let record = self.record_for(ctx, r, true).await?;
         Ok(api::record_to_metadata(&record, self.vendor_id()))
     }
 
@@ -226,7 +237,7 @@ impl VendorPlugin for UnifiPlugin {
         r: &FirmwareRef,
         sink: &mut dyn ArtifactSink,
     ) -> Result<(), PluginError> {
-        let record = self.record_for(ctx, r).await?;
+        let record = self.record_for(ctx, r, false).await?;
         let data_url = record.links.data.as_ref().ok_or_else(|| {
             PluginError::UnexpectedResponse(format!(
                 "UniFi firmware record {} has no download link",
@@ -507,6 +518,40 @@ mod tests {
         let meta = plugin.metadata(&ctx(), &fref).await.unwrap();
         assert_eq!(meta.version.raw, record.version);
         assert_eq!(meta.hardware_targets, vec!["U7PG2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn metadata_removes_the_record_from_the_cache_as_it_uses_it() {
+        let plugin = UnifiPlugin::new();
+        let records: Vec<_> = fixture_records().into_iter().take(2).collect();
+        assert_eq!(records.len(), 2, "the fixture should have two records");
+        let key = |i: usize| -> url::Url {
+            format!("http://127.0.0.1:9/api/firmware/cached-{i}")
+                .parse()
+                .unwrap()
+        };
+        for (i, record) in records.iter().enumerate() {
+            plugin
+                .cache
+                .lock()
+                .unwrap()
+                .insert(key(i).to_string(), record.clone());
+        }
+        let fref = |i: usize| FirmwareRef {
+            source_url: key(i),
+            ..api::record_to_ref(&records[i], "unifi")
+        };
+
+        plugin.metadata(&ctx(), &fref(0)).await.unwrap();
+        assert_eq!(plugin.cache.lock().unwrap().len(), 1);
+
+        // The used record is gone, so asking again falls back to a request,
+        // which fails against the unreachable address; the other record is
+        // still served from the cache.
+        let again = plugin.metadata(&ctx(), &fref(0)).await;
+        assert!(matches!(again, Err(PluginError::Transport(_))));
+        plugin.metadata(&ctx(), &fref(1)).await.unwrap();
+        assert!(plugin.cache.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -817,7 +817,8 @@ so there is no real pagination, and a single request with a large `limit`
 returns all ~3,400 release records (about 3 MB, or about 530 KB on the
 wire, since responses are gzip-compressed). It caches the full records in
 memory, and `metadata()` answers from that cache instead of requesting
-each record — otherwise a dig would take about an hour at the default one
+each record, removing each record as it goes so the cache empties as the
+dig stores entries — otherwise a dig would take about an hour at the default one
 request per second. A response that fills the whole `limit` is treated as
 possibly truncated and fails the dig rather than silently missing records.
 `unearth` makes two requests: the record (the cache is empty in a fresh
@@ -901,11 +902,12 @@ the plugin's use changes.
   channels, and a decision on identity: some versions appear in both
   channels with identical files, and `select_records` currently keeps just
   the newest record per model and version.
-- **Request efficiency and performance.** One request per dig (~530 KB
-  gzip-compressed, ~3 MB decoded) is fine today, but is worth revisiting:
-  - `/api/firmware-latest` returns only the newest version per model (~200
-    records) — much smaller, but it would miss re-published old versions.
-  - The in-memory cache holds every record for the life of the process.
+- **Request efficiency.** One request per dig (~530 KB gzip-compressed,
+  ~3 MB decoded) is fine today. `/api/firmware-latest` returns only the
+  newest version per model (~200 records) and is deliberately not used: it
+  would miss old versions Ubiquiti re-publishes, and `dig` exists to notice
+  exactly those. Listing `models` is the way to transfer less (see
+  "Choosing between the two modes" above).
 
 ## Naming
 
@@ -1021,7 +1023,8 @@ exists because of it, not as a design decision made up front.
   file, other products and other channels, keeping only the newest
   duplicate of a model and version, SHA-256 decoding, version ordinals
   (numeric builds, Cloud Key git-hash builds, pre-releases as Opaque), and
-  `metadata()` being served from the discover cache without a request.
+  `metadata()` being served from the discover cache without a request, and
+  removing each record as it uses it.
   `discover` runs against a local mock of the list API: one request by
   default, one request per distinct model with `models` set, dropping
   other models if the server ignores the model filter, and failing on a
