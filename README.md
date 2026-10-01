@@ -1,6 +1,7 @@
 # delve
 
-[![CI](https://github.com/shroomsword/delve/actions/workflows/ci.yml/badge.svg?branch=initial-development)](https://github.com/shroomsword/delve/actions/workflows/ci.yml?query=branch%3Ainitial-development)
+[![CI](https://github.com/shroomsword/delve/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/shroomsword/delve/actions/workflows/ci.yml?query=branch%3Amain)
+[![Release](https://github.com/shroomsword/delve/actions/workflows/release.yml/badge.svg)](https://github.com/shroomsword/delve/actions/workflows/release.yml)
 
 An embedded firmware scraper and notification framework. `delve` discovers
 firmware releases across embedded device vendors, tracks their metadata
@@ -12,7 +13,7 @@ format.
 **Status: early development.** The workspace builds against real
 crates.io dependencies, and CI runs `rustfmt`, `clippy`, a RustSec
 advisory check, the test suite, release builds and a warning-free
-`cargo doc` on every pull request and every push to `initial-development`,
+`cargo doc` on every pull request and every push to `main`,
 with all features enabled and the lockfile enforced (`--locked`). Tests
 and builds cover Linux x86_64, macOS (Apple Silicon and Intel) and
 Windows x86_64; on Intel macOS the tests are compiled but not run.

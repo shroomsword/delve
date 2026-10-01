@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - initial-development
+      - main
   workflow_call:
 
 permissions:

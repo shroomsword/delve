@@ -1,0 +1,35 @@
+name: Feature request
+description: New functionality or a change to existing behavior.
+labels: ["type: feature", "status: needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or motivation
+      description: What need is unmet, and who or what is affected. Describe the problem, not the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: The behavior or interface you propose, at whatever level of detail is known.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches and why they were rejected.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Verifiable conditions that define when this is done.
+      placeholder: |
+        - [ ]
+        - [ ]
+    validations:
+      required: true

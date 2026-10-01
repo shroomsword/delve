@@ -1,0 +1,56 @@
+name: Bug report
+description: Incorrect behavior, a crash, or a regression.
+labels: ["type: bug", "status: needs-triage"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is wrong, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal commands, input, or sequence of actions that trigger the problem.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release version or commit SHA where the problem occurs.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / target
+      description: OS, toolchain versions, hardware or board, firmware version, as applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Relevant output only. Rendered as a code block.
+      render: text
+    validations:
+      required: false
