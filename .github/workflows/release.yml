@@ -1,0 +1,183 @@
+# Release workflow: a pushed version tag builds every shipped target, then publishes a GitHub Release
+# with the archives and SHA256SUMS. The build matrix must stay identical to ci.yml's.
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  BIN: delve
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: tag
+        name: Verify tag
+        env:
+          TAG: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # actions/checkout rewrites the tag ref; fetch it again so the annotated tag object is present.
+          git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}"
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag ${TAG} is not a semantic version"
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "refs/tags/${TAG}")" != "tag" ]]; then
+            echo "::error::Tag ${TAG} is not an annotated tag"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${TAG}^{commit}" "origin/${DEFAULT_BRANCH}"; then
+            echo "::error::Tag ${TAG} does not point at a commit on ${DEFAULT_BRANCH}"
+            exit 1
+          fi
+          echo "version=${TAG}" >> "$GITHUB_OUTPUT"
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Runs the full CI workflow on the tagged commit. The checks are defined only in ci.yml.
+  checks:
+    needs: verify
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [verify, checks]
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The default feature set has no vendors, so ship every feature (as ci.yml builds) with the release profile.
+      - name: Build
+        run: cargo build -p delve-cli --all-features --release --locked --target "$TARGET"
+
+      - name: Stage binary
+        run: |
+          set -euo pipefail
+          ext=""
+          if [[ "$TARGET" == *windows* ]]; then
+            ext=".exe"
+          fi
+          mkdir -p out
+          cp "target/${TARGET}/release/${BIN}${ext}" out/
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bin-${{ matrix.target }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.verify.outputs.version }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bin-*
+          path: bins
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          licenses=(LICENSE*)
+          mkdir -p dist stage
+          for dir in bins/bin-*; do
+            target="${dir#bins/bin-}"
+            name="${BIN}-${TAG}-${target}"
+            mkdir -p "stage/${name}"
+            cp "$dir"/* "stage/${name}/"
+            cp README.md "stage/${name}/"
+            if [[ ${#licenses[@]} -gt 0 ]]; then
+              cp "${licenses[@]}" "stage/${name}/"
+            fi
+            if [[ "$target" == *windows* ]]; then
+              (cd stage && zip -qr "../dist/${name}.zip" "$name")
+            else
+              # Artifact upload drops the executable bit; restore it before archiving.
+              chmod +x "stage/${name}/${BIN}"
+              tar -C stage -czf "dist/${name}.tar.gz" "$name"
+            fi
+          done
+          ls -l dist
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create draft release
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::A release for ${TAG} already exists"
+            exit 1
+          fi
+          flags=(--draft --verify-tag --generate-notes --title "$TAG")
+          if [[ "$PRERELEASE" == "true" ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "${flags[@]}"
+
+      - name: Upload artifacts
+        run: gh release upload "$TAG" dist/*
+
+      - name: Publish
+        run: gh release edit "$TAG" --draft=false

@@ -1,0 +1,35 @@
+# Release notes categories for GitHub's generated release notes.
+# Each merged PR is placed in the first category whose labels match, so `breaking` must come first.
+changelog:
+  exclude:
+    labels:
+      - "type: chore"
+  categories:
+    - title: Breaking changes
+      labels:
+        - breaking
+    - title: Features
+      labels:
+        - "type: feature"
+    - title: Enhancements
+      labels:
+        - "type: enhancement"
+    - title: Fixes
+      labels:
+        - "type: bug"
+    - title: Dependencies
+      labels:
+        - "type: dependencies"
+    - title: Documentation
+      labels:
+        - "type: docs"
+    - title: Build and CI
+      labels:
+        - "type: build"
+    - title: Refactoring and tests
+      labels:
+        - "type: refactor"
+        - "type: test"
+    - title: Other changes
+      labels:
+        - "*"
