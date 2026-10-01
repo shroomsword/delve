@@ -112,6 +112,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn id_alone_resolves_the_entry_and_ignores_other_entries() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new(
+                "acme",
+                vec![
+                    release("widget", "1.0", &[1, 0], 1),
+                    release("widget", "1.1", &[1, 1], 2),
+                ],
+            ),
+        )
+        .await;
+
+        // The id comes from the store, the same way `catalog` surfaces it.
+        let id = store
+            .resolve_one(&widget_1_0().into_store_selector())
+            .await
+            .unwrap()
+            .expect("widget 1.0 is stored")
+            .id;
+
+        let mut s = selector();
+        s.id = Some(id);
+        let out = provenance(&store, s).await.unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "header plus one observation: {out}");
+        assert!(lines[1].ends_with("1.0 / 010101010101"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_id_is_an_error() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+        )
+        .await;
+
+        let mut s = selector();
+        s.id = Some(uuid::Uuid::new_v4());
+        let err = provenance(&store, s).await.unwrap_err();
+        assert_eq!(err.to_string(), "no matching firmware entry");
+    }
+
+    #[tokio::test]
     async fn selector_matching_several_entries_is_an_error() {
         let store = memory_store().await;
         seed(
