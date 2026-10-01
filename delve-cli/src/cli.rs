@@ -36,6 +36,14 @@ pub enum Command {
         /// "Baseline vs incremental digs" and "CLI commands" sections.
         #[arg(long, requires = "vendor")]
         redig: bool,
+
+        /// Dev escape hatch: run the named vendor even though its plugin
+        /// has `tos_reviewed: false`, logging a loud warning. Only valid
+        /// with `--vendor`, so an unfiltered (e.g. scheduled) dig can never
+        /// pick it up. Results are written to the real store — see the
+        /// README's "Compliance" section.
+        #[arg(long, requires = "vendor")]
+        allow_unreviewed: bool,
     },
 
     /// Print currently-known firmware attributes. No downloading — see the

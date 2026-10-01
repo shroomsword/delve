@@ -14,6 +14,7 @@ pub async fn run(
     store: &dyn MetadataStore,
     vendor_filter: Option<String>,
     redig: bool,
+    allow_unreviewed: bool,
 ) -> anyhow::Result<()> {
     // Always-on log subscriber (see the README's "Notifications" section)
     // plus whatever's configured. Webhook is
@@ -39,7 +40,16 @@ pub async fn run(
     }
     let bus = EventBus::new(subscribers);
 
-    dig_vendors(config, registry, store, &bus, vendor_filter, redig).await
+    dig_vendors(
+        config,
+        registry,
+        store,
+        &bus,
+        vendor_filter,
+        redig,
+        allow_unreviewed,
+    )
+    .await
 }
 
 /// Everything `run` does after building the event bus — split out so tests
@@ -51,7 +61,14 @@ pub async fn dig_vendors(
     bus: &EventBus,
     vendor_filter: Option<String>,
     redig: bool,
+    allow_unreviewed: bool,
 ) -> anyhow::Result<()> {
+    // clap already enforces this, but the override is too dangerous to rely
+    // on a single layer: it must never apply to an unfiltered dig.
+    if allow_unreviewed && vendor_filter.is_none() {
+        anyhow::bail!("--allow-unreviewed requires --vendor");
+    }
+
     let (default_transport, transport_overrides) = config.transport.resolve()?;
     let http_config = config.transport.http_client_config();
     let (default_rate_limit, rate_limit_overrides) = config.transport.rate_limits();
@@ -83,11 +100,20 @@ pub async fn dig_vendors(
         };
 
         if !plugin.capabilities().tos_reviewed {
-            tracing::warn!(
-                vendor = vendor_id,
-                "skipping: ToS/robots.txt not yet reviewed (see the README's \"Compliance\" section)"
-            );
-            continue;
+            if allow_unreviewed {
+                tracing::warn!(
+                    vendor = vendor_id,
+                    "RUNNING UNREVIEWED VENDOR: ToS/robots.txt has not been reviewed; \
+                     --allow-unreviewed is a dev escape hatch, not for scheduled runs \
+                     (see the README's \"Compliance\" section)"
+                );
+            } else {
+                tracing::warn!(
+                    vendor = vendor_id,
+                    "skipping: ToS/robots.txt not yet reviewed (see the README's \"Compliance\" section)"
+                );
+                continue;
+            }
         }
 
         if redig {
@@ -149,6 +175,7 @@ mod tests {
             &subscriber.bus(),
             vendor.map(String::from),
             redig,
+            false,
         )
         .await
     }
@@ -272,6 +299,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn allow_unreviewed_runs_a_named_unreviewed_vendor() {
+        let store = memory_store().await;
+        let mut unreviewed = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        unreviewed.tos_reviewed = false;
+        let registry = registry(vec![unreviewed]);
+        let sub = RecordingSubscriber::default();
+
+        dig_vendors(
+            &config(""),
+            &registry,
+            &store,
+            &sub.bus(),
+            Some("acme".into()),
+            false,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn allow_unreviewed_without_a_vendor_is_an_error_and_digs_nothing() {
+        let store = memory_store().await;
+        let mut unreviewed = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        unreviewed.tos_reviewed = false;
+        let registry = registry(vec![
+            unreviewed,
+            MockPlugin::new("globex", vec![release("sprocket", "1.0", &[1, 0], 2)]),
+        ]);
+        let sub = RecordingSubscriber::default();
+
+        let err = dig_vendors(
+            &config(""),
+            &registry,
+            &store,
+            &sub.bus(),
+            None,
+            false,
+            true,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("requires --vendor"), "{err}");
+        assert!(store.all_current("acme").await.unwrap().is_empty());
+        assert!(store.all_current("globex").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn vendor_filter_and_enabled_list_narrow_which_vendors_dig() {
         let registry = registry(vec![
             MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
@@ -288,7 +365,7 @@ mod tests {
 
         let store = memory_store().await;
         let narrowed = config("[vendors]\nenabled = [\"acme\"]");
-        dig_vendors(&narrowed, &registry, &store, &sub.bus(), None, false)
+        dig_vendors(&narrowed, &registry, &store, &sub.bus(), None, false, false)
             .await
             .unwrap();
         assert_eq!(store.all_current("acme").await.unwrap().len(), 1);

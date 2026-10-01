@@ -84,6 +84,7 @@ mod tests {
                 &EventBus::new(vec![]),
                 None,
                 false,
+                false,
             )
             .await
             .unwrap()

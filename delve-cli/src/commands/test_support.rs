@@ -195,6 +195,7 @@ pub async fn seed(store: &SqliteStore, plugin: MockPlugin) {
         &EventBus::new(vec![]),
         None,
         false,
+        false,
     )
     .await
     .expect("seed dig succeeds");
