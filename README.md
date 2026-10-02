@@ -651,7 +651,7 @@ pub enum FirmwareEvent {
   `subscriber-log` (always on — an audit trail independent of whether
   webhook/email delivery succeeds; each line names the vendor, device
   family, hardware and version), `subscriber-webhook` (POSTs a JSON
-  payload) and `subscriber-email` (see [Email](#email)).
+  payload, see [Webhook](#webhook)) and `subscriber-email` (see [Email](#email)).
 - Fan-out is concurrent; one slow or broken subscriber never blocks
   another — failures are logged and swallowed at the bus level, since a
   webhook being down shouldn't fail the whole dig.
@@ -666,6 +666,65 @@ pub enum FirmwareEvent {
   that's what's unambiguously notification-worthy by default; widening
   this to a config knob is a reasonable future addition, not yet built.
 
+
+### Webhook
+
+`subscriber-webhook` POSTs a JSON body to the URL in `[subscribers.webhook]`
+for every event, built with the `subscriber-webhook` Cargo feature:
+
+```toml
+[subscribers.webhook]
+url = "https://example.com/hooks/delve"
+```
+
+An update to a UniFi switch looks like this:
+
+```json
+{
+  "schema": 1,
+  "kind": "UpdatedRelease",
+  "vendor": "unifi",
+  "device_family": "USW",
+  "hardware_targets": ["USMINI"],
+  "display_name": "Switch Flex Mini",
+  "version": "v2.1.6+762",
+  "previous_version": "v2.1.3+755",
+  "version_direction": "newer",
+  "release_date": "2025-08-25",
+  "sha256": "29b1ee914d2e56f04cb30b52bc02b9fce31a1b06f90855e6a1976939e05a777c",
+  "source_url": "https://fw-update.ui.com/api/firmware/4cafc8c9-4830-41cf-afc4-ae678c19afed",
+  "release_notes_url": null,
+  "changed_fields": [
+    {"field": "version", "before": "v2.1.3+755", "after": "v2.1.6+762"},
+    {"field": "sha256", "before": "e542c87c…", "after": "29b1ee91…"}
+  ],
+  "first_seen": null
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `schema` | The payload shape, currently `1`. It changes only when a key is removed or changes meaning, never for an added key. |
+| `kind` | `NewRelease` (a version delve hadn't seen) or `UpdatedRelease` (a known version with a new hash, or a new version of a known device) |
+| `vendor`, `device_family`, `hardware_targets` | Which device. `hardware_targets` is a list, because an entry can cover more than one hardware revision. |
+| `display_name` | A human-readable product name when the plugin has one, else `null` |
+| `version` | The version, as the vendor published it |
+| `previous_version`, `version_direction`, `changed_fields` | `UpdatedRelease` only, `null` otherwise. The direction is `newer`, `older` or `unordered` (a downgrade means something different from an upgrade). |
+| `release_date` | `YYYY-MM-DD`, or `null` |
+| `sha256` | Lower-case hex, or `null` |
+| `source_url`, `release_notes_url` | Where the release was found, and its notes when the vendor has a link |
+| `first_seen` | `NewRelease` only: when delve first saw it, as RFC 3339 to the second in UTC, like `2026-10-02T03:30:00Z` |
+
+- **Every key is always present.** A value that doesn't apply is `null`, so
+  a receiver never needs to test for a missing key. A `NewRelease` has
+  `"previous_version": null` where the very first payload simply left the key
+  out; `kind`, `version` and `previous_version` otherwise mean what they did.
+- **Ignore keys you don't know.** New keys can be added without a new `schema`.
+- **A request has 30 seconds.** An endpoint that doesn't answer fails that one
+  delivery and the dig carries on, like any other subscriber failure. A
+  non-2xx response is a failure too. There is no retry.
+- The body is not signed, so a receiver can't tell it came from delve. Put the
+  URL somewhere it can't be guessed, and treat the body as untrusted input.
 
 ### Email
 
@@ -1276,6 +1335,13 @@ exists because of it, not as a design decision made up front.
 - **`delve-subscribers/subscriber-log`**: a new-release line and an update
   line each name the vendor, device family, hardware and version, checked by
   capturing what the subscriber actually logs.
+- **`delve-subscribers/subscriber-webhook`**: the exact JSON for a new
+  release and for an update, every key being present for every kind of event
+  (including one with no date, hash, notes or name), the three original keys
+  keeping their meaning, the version direction spelled out, a real POST to a
+  local server arriving as `application/json` with the same body, an error
+  status being a delivery error, and an endpoint that never answers timing
+  out instead of holding up the dig.
 - **`delve-subscribers/subscriber-email`**: the subject and body for each
   event kind (new, updated newer/older/unordered, same-version rebuild), a
   newline in vendor data not being able to add header lines, address and
