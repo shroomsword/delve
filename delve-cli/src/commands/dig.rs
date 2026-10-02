@@ -84,6 +84,8 @@ fn email_subscriber(
         from: cfg.from.clone(),
         to: cfg.to.clone(),
         credentials: cfg.resolve_credentials()?,
+        batch: cfg.batch,
+        max_events_per_message: cfg.max_events()?,
     };
     Ok(Box::new(EmailSubscriber::smtp(&settings)?))
 }
@@ -251,6 +253,9 @@ mod tests {
             "{missing_env}"
         );
 
+        let zero_cap = build(&section("max_events_per_email = 0\n")).unwrap_err();
+        assert!(zero_cap.to_string().contains("at least 1"), "{zero_cap}");
+
         let bad_to =
             build("[subscribers.email]\nhost = \"h\"\nfrom = \"a@b.test\"\nto = [\"nope\"]\n")
                 .unwrap_err();
@@ -307,13 +312,15 @@ mod tests {
         (addr, received)
     }
 
+    /// Digs a mock vendor twice, the second time with a version bump and a new
+    /// line (two events), mailing through a fake SMTP server configured with
+    /// `extra` under `[subscribers.email]`. Returns what the server saw.
     #[cfg(feature = "subscriber-email")]
-    #[tokio::test]
-    async fn a_configured_email_subscriber_mails_each_event_of_a_real_dig() {
+    async fn dig_with_two_events_by_email(extra: &str) -> String {
         let (addr, received) = fake_smtp_server();
         let config = config(&format!(
             "[subscribers.email]\nhost = \"127.0.0.1\"\nport = {}\ntls = \"none\"\n\
-             from = \"Delve <delve@example.test>\"\nto = [\"ops@example.test\"]\n",
+             from = \"Delve <delve@example.test>\"\nto = [\"ops@example.test\"]\n{extra}",
             addr.port()
         ));
         let store = memory_store().await;
@@ -337,6 +344,34 @@ mod tests {
         dig_once().await.unwrap();
 
         let log = received.lock().unwrap().join("\n");
+        log
+    }
+
+    #[cfg(feature = "subscriber-email")]
+    #[tokio::test]
+    async fn a_dig_with_several_events_sends_one_digest_email() {
+        let log = dig_with_two_events_by_email("").await;
+
+        assert_eq!(
+            log.matches("MAIL FROM:<delve@example.test>").count(),
+            1,
+            "two events in one dig must be one message: {log}"
+        );
+        assert!(
+            log.contains("Subject: [delve] 2 firmware changes: acme (2 devices)"),
+            "{log}"
+        );
+        // Both changes are in that one message.
+        assert!(log.contains("1.0 -> 1.1"), "{log}");
+        assert!(log.contains("acme gadget (rev-a)"), "{log}");
+        assert!(log.contains("0.1"), "{log}");
+    }
+
+    #[cfg(feature = "subscriber-email")]
+    #[tokio::test]
+    async fn with_batching_off_each_event_is_its_own_email() {
+        let log = dig_with_two_events_by_email("batch = false\n").await;
+
         assert_eq!(
             log.matches("MAIL FROM:<delve@example.test>").count(),
             2,
@@ -355,6 +390,20 @@ mod tests {
             log.contains("Subject: [delve] New firmware: acme gadget (rev-a) 0.1"),
             "{log}"
         );
+    }
+
+    #[cfg(feature = "subscriber-email")]
+    #[tokio::test]
+    async fn the_cap_splits_a_dig_into_numbered_emails() {
+        let log = dig_with_two_events_by_email("max_events_per_email = 1\n").await;
+
+        assert_eq!(
+            log.matches("MAIL FROM:<delve@example.test>").count(),
+            2,
+            "{log}"
+        );
+        assert!(log.contains("(part 1 of 2)"), "{log}");
+        assert!(log.contains("(part 2 of 2)"), "{log}");
     }
 
     #[tokio::test]

@@ -270,6 +270,22 @@ pub struct EmailConfig {
     /// `resolve_credentials`).
     pub username: Option<String>,
     pub password: Option<String>,
+    /// Send one message for all the events of a dig (the default) instead of
+    /// one per event. See the README's "Email" section.
+    #[serde(default = "default_true")]
+    pub batch: bool,
+    /// With `batch`, the most events in one message; a bigger burst is split
+    /// into several messages. Defaults to 50.
+    #[serde(default = "default_max_events_per_email")]
+    pub max_events_per_email: usize,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_max_events_per_email() -> usize {
+    50
 }
 
 /// How the SMTP connection is secured.
@@ -288,6 +304,15 @@ pub enum EmailTls {
 }
 
 impl EmailConfig {
+    /// `max_events_per_email`, checked: a message holds at least one event.
+    #[cfg_attr(not(feature = "subscriber-email"), allow(dead_code))]
+    pub fn max_events(&self) -> anyhow::Result<usize> {
+        if self.max_events_per_email == 0 {
+            anyhow::bail!("[subscribers.email] max_events_per_email must be at least 1");
+        }
+        Ok(self.max_events_per_email)
+    }
+
     /// The SMTP login, with any `env:` references resolved. `None` when
     /// neither field is set. A username without a password, or the reverse,
     /// is an error rather than a silently unauthenticated send, and so is an
@@ -410,6 +435,56 @@ mod tests {
     }
 
     #[test]
+    fn email_batches_by_default_with_a_cap_of_fifty() {
+        let config: Config = toml::from_str(
+            r#"
+            [subscribers.email]
+            host = "h"
+            from = "a@b.test"
+            to = ["c@d.test"]
+            "#,
+        )
+        .unwrap();
+        let email = config.subscribers.email.unwrap();
+        assert!(email.batch);
+        assert_eq!(email.max_events().unwrap(), 50);
+    }
+
+    #[test]
+    fn email_batching_can_be_turned_off_and_capped() {
+        let config: Config = toml::from_str(
+            r#"
+            [subscribers.email]
+            host = "h"
+            from = "a@b.test"
+            to = ["c@d.test"]
+            batch = false
+            max_events_per_email = 10
+            "#,
+        )
+        .unwrap();
+        let email = config.subscribers.email.unwrap();
+        assert!(!email.batch);
+        assert_eq!(email.max_events().unwrap(), 10);
+    }
+
+    #[test]
+    fn a_zero_cap_is_an_error_not_an_empty_message() {
+        let config: Config = toml::from_str(
+            r#"
+            [subscribers.email]
+            host = "h"
+            from = "a@b.test"
+            to = ["c@d.test"]
+            max_events_per_email = 0
+            "#,
+        )
+        .unwrap();
+        let err = config.subscribers.email.unwrap().max_events().unwrap_err();
+        assert!(err.to_string().contains("at least 1"), "{err}");
+    }
+
+    #[test]
     fn email_tls_accepts_each_mode_and_rejects_others() {
         let parse = |tls: &str| {
             toml::from_str::<Config>(&format!(
@@ -456,6 +531,8 @@ mod tests {
             to: vec!["c@d.test".into()],
             username: username.map(String::from),
             password: password.map(String::from),
+            batch: true,
+            max_events_per_email: 50,
         }
     }
 

@@ -1,12 +1,22 @@
-//! Email subscriber — sends one plain-text message per event over SMTP.
-//! Feature-gated in `delve-cli`, same pattern as `subscriber-webhook` (see
-//! the README's "Notifications" section).
+//! Email subscriber — sends plain-text messages over SMTP. Feature-gated in
+//! `delve-cli`, same pattern as `subscriber-webhook` (see the README's
+//! "Notifications" section).
 //!
-//! One email goes out per event, with no batching: a dig that finds many new
-//! releases sends many emails. A vendor's first dig is a silent baseline, so
-//! this only bites when a later dig finds a lot at once.
+//! **Batching.** By default the events of one dig are held back and sent as
+//! one message when the dig is over (`Subscriber::flush`): a single event
+//! gets the ordinary message, and two or more get a digest, split into several
+//! messages only past `max_events_per_message`. Without batching every event
+//! is sent as it arrives. Either way a vendor's first dig is a silent
+//! baseline, so a busy dig means a later one that finds a lot at once.
+//!
+//! Events are only in memory until the flush, so a process that is killed
+//! before it loses them. The engine flushes however a dig ends, including
+//! when it fails part-way.
+
+mod digest;
 
 use std::fmt::Display;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -45,6 +55,11 @@ pub struct EmailSettings {
     /// Username and password, sent with whatever mechanism the server offers.
     /// `None` sends without authenticating.
     pub credentials: Option<(String, String)>,
+    /// Send one message per dig instead of one per event.
+    pub batch: bool,
+    /// With `batch`, the most events in one message; a bigger burst is split
+    /// into several. At least 1.
+    pub max_events_per_message: usize,
 }
 
 /// How long to wait on the SMTP server for any one step.
@@ -54,6 +69,10 @@ pub struct EmailSubscriber<T> {
     transport: T,
     from: Mailbox,
     to: Vec<Mailbox>,
+    /// `Some(max)` when batching, with at most `max` events per message.
+    batching: Option<usize>,
+    /// Events held back until the next flush.
+    pending: Mutex<Vec<FirmwareEvent>>,
 }
 
 impl EmailSubscriber<AsyncSmtpTransport<Tokio1Executor>> {
@@ -87,7 +106,12 @@ impl EmailSubscriber<AsyncSmtpTransport<Tokio1Executor>> {
             None => builder,
         };
         let transport = builder.timeout(Some(SMTP_TIMEOUT)).build();
-        Self::with_transport(transport, &settings.from, &settings.to)
+        let subscriber = Self::with_transport(transport, &settings.from, &settings.to)?;
+        Ok(if settings.batch {
+            subscriber.batched(settings.max_events_per_message)
+        } else {
+            subscriber
+        })
     }
 }
 
@@ -121,7 +145,17 @@ impl<T> EmailSubscriber<T> {
             transport,
             from,
             to,
+            batching: None,
+            pending: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Holds events back and sends a digest on `flush`, with at most
+    /// `max_events_per_message` events in each message (at least 1).
+    #[must_use]
+    pub fn batched(mut self, max_events_per_message: usize) -> Self {
+        self.batching = Some(max_events_per_message.max(1));
+        self
     }
 }
 
@@ -140,8 +174,32 @@ where
     }
 
     async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError> {
+        if self.batching.is_some() {
+            self.pending
+                .lock()
+                .expect("pending events lock")
+                .push(event.clone());
+            return Ok(());
+        }
         let (subject, body) = render(event);
+        self.send(subject, body).await
+    }
 
+    async fn flush(&self) -> Result<(), SubscriberError> {
+        let Some(max) = self.batching else {
+            return Ok(());
+        };
+        let events = std::mem::take(&mut *self.pending.lock().expect("pending events lock"));
+        self.send_batch(events, max).await
+    }
+}
+
+impl<T> EmailSubscriber<T>
+where
+    T: AsyncTransport + Send + Sync,
+    T::Error: Display,
+{
+    async fn send(&self, subject: String, body: String) -> Result<(), SubscriberError> {
         let mut message = Message::builder().from(self.from.clone());
         for recipient in &self.to {
             message = message.to(recipient.clone());
@@ -157,6 +215,44 @@ where
             .await
             .map_err(|e| SubscriberError::Delivery(e.to_string()))?;
         Ok(())
+    }
+
+    /// Sends what a dig held back: nothing for no events, the ordinary
+    /// message for one, and a digest (or several, past `max` events) for more.
+    /// Every message is tried even if an earlier one fails.
+    async fn send_batch(
+        &self,
+        events: Vec<FirmwareEvent>,
+        max: usize,
+    ) -> Result<(), SubscriberError> {
+        match events.as_slice() {
+            [] => return Ok(()),
+            [only] => {
+                let (subject, body) = render(only);
+                return self.send(subject, body).await;
+            }
+            _ => {}
+        }
+
+        let events = digest::sorted(events);
+        let chunks: Vec<&[FirmwareEvent]> = events.chunks(max).collect();
+        let total = chunks.len();
+        let (mut failed, mut first_error) = (0, None);
+        for (i, chunk) in chunks.into_iter().enumerate() {
+            let part = (total > 1).then_some((i + 1, total));
+            let (subject, body) = digest::render_digest(chunk, part);
+            if let Err(e) = self.send(subject, body).await {
+                failed += 1;
+                first_error.get_or_insert(e);
+            }
+        }
+        match first_error {
+            None => Ok(()),
+            Some(e) if total == 1 => Err(e),
+            Some(e) => Err(SubscriberError::Delivery(format!(
+                "{failed} of {total} messages failed; the first error was: {e}"
+            ))),
+        }
     }
 }
 
@@ -240,7 +336,7 @@ fn render(event: &FirmwareEvent) -> (String, String) {
 /// subject a median 93 characters (up to 109) against 74 (at most 78), and the
 /// version, the part that matters most, moved past column 60 in most of them,
 /// where an inbox preview cuts it off. It goes in the body instead.
-fn device_label(firmware: &FirmwareMetadata) -> String {
+pub(crate) fn device_label(firmware: &FirmwareMetadata) -> String {
     let hardware = firmware.hardware_targets.join("+");
     if hardware.is_empty() || hardware == firmware.device_family {
         format!("{} {}", firmware.vendor, firmware.device_family)
@@ -279,7 +375,7 @@ fn describe(firmware: &FirmwareMetadata) -> String {
     out
 }
 
-fn single_line(text: &str) -> String {
+pub(crate) fn single_line(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
@@ -512,6 +608,8 @@ mod tests {
                 from: "Delve <delve@example.test>".into(),
                 to: recipients(&["ops@example.test"]),
                 credentials: Some(("user".into(), "secret".into())),
+                batch: false,
+                max_events_per_message: 50,
             };
             assert!(EmailSubscriber::smtp(&settings).is_ok(), "{tls:?}");
         }
@@ -616,6 +714,8 @@ mod tests {
             from: "Delve <delve@example.test>".into(),
             to: recipients(&["ops@example.test", "sec@example.test"]),
             credentials: None,
+            batch: false,
+            max_events_per_message: 50,
         })
         .unwrap();
 
@@ -650,10 +750,368 @@ mod tests {
             from: "delve@example.test".into(),
             to: recipients(&["ops@example.test"]),
             credentials: None,
+            batch: false,
+            max_events_per_message: 50,
         })
         .unwrap();
 
         let err = subscriber.notify(&new_release("1.0")).await.unwrap_err();
+        assert!(matches!(err, SubscriberError::Delivery(_)), "{err}");
+    }
+
+    // ---- batching ----
+
+    /// A new release of `acme widget` at version `1.<n>`, ordered by `n`.
+    fn release(n: u64) -> FirmwareEvent {
+        let mut firmware = firmware(&format!("1.{n}"), n as u8);
+        firmware.version.ordinal = Some(vec![1, n]);
+        FirmwareEvent::NewRelease {
+            firmware,
+            first_seen: Utc.with_ymd_and_hms(2026, 10, 1, 12, 0, 0).unwrap(),
+        }
+    }
+
+    fn batched(transport: AsyncStubTransport, max: usize) -> EmailSubscriber<AsyncStubTransport> {
+        EmailSubscriber::with_transport(
+            transport,
+            "delve@example.test",
+            &recipients(&["ops@example.test"]),
+        )
+        .unwrap()
+        .batched(max)
+    }
+
+    /// The subjects of what a stub transport was asked to send.
+    async fn subjects(transport: &AsyncStubTransport) -> Vec<String> {
+        transport
+            .messages()
+            .await
+            .iter()
+            .map(|(_, raw)| {
+                let line = raw.lines().find(|l| l.starts_with("Subject:")).unwrap();
+                line.trim_start_matches("Subject: ").to_string()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_batching_subscriber_sends_nothing_until_flush() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = batched(transport.clone(), 50);
+
+        subscriber.notify(&release(1)).await.unwrap();
+        subscriber.notify(&release(2)).await.unwrap();
+        assert!(transport.messages().await.is_empty());
+
+        subscriber.flush().await.unwrap();
+        assert_eq!(transport.messages().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_burst_is_one_digest_that_counts_the_changes() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = batched(transport.clone(), 50);
+        for n in 1..=26 {
+            subscriber.notify(&release(n)).await.unwrap();
+        }
+        subscriber.flush().await.unwrap();
+
+        let sent = transport.messages().await;
+        assert_eq!(sent.len(), 1, "26 events must be one message");
+        assert_eq!(
+            subjects(&transport).await,
+            ["[delve] 26 firmware changes: acme widget (rev-a+rev-b)"]
+        );
+        let raw = &sent[0].1;
+        assert!(
+            raw.contains("26 firmware changes found in this dig."),
+            "{raw}"
+        );
+        // Newest first within the device.
+        let (first, last) = (
+            raw.find("1.26").unwrap(),
+            raw.find("1.1 ").unwrap_or(usize::MAX),
+        );
+        assert!(first < last, "{raw}");
+    }
+
+    #[tokio::test]
+    async fn one_event_gets_the_ordinary_message_not_a_digest() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = batched(transport.clone(), 50);
+        subscriber.notify(&release(1)).await.unwrap();
+        subscriber.flush().await.unwrap();
+
+        assert_eq!(
+            subjects(&transport).await,
+            [render(&release(1)).0],
+            "a quiet dig must look exactly as it does without batching"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_events_send_nothing_and_a_second_flush_sends_nothing_new() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = batched(transport.clone(), 50);
+        subscriber.flush().await.unwrap();
+        assert!(transport.messages().await.is_empty());
+
+        subscriber.notify(&release(1)).await.unwrap();
+        subscriber.notify(&release(2)).await.unwrap();
+        subscriber.flush().await.unwrap();
+        subscriber.flush().await.unwrap();
+        assert_eq!(
+            transport.messages().await.len(),
+            1,
+            "what was sent is not kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_burst_past_the_cap_is_split_into_numbered_messages() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = batched(transport.clone(), 3);
+        for n in 1..=7 {
+            subscriber.notify(&release(n)).await.unwrap();
+        }
+        subscriber.flush().await.unwrap();
+
+        let subjects = subjects(&transport).await;
+        assert_eq!(subjects.len(), 3, "{subjects:?}");
+        assert!(subjects[0].ends_with("(part 1 of 3)"), "{subjects:?}");
+        assert!(subjects[2].ends_with("(part 3 of 3)"), "{subjects:?}");
+        assert!(
+            subjects[0].starts_with("[delve] 3 firmware changes"),
+            "{subjects:?}"
+        );
+        assert!(
+            subjects[2].starts_with("[delve] 1 firmware change:"),
+            "{subjects:?}"
+        );
+
+        // Every event is in exactly one message.
+        let all: String = transport
+            .messages()
+            .await
+            .iter()
+            .map(|m| m.1.clone())
+            .collect();
+        for n in 1..=7 {
+            assert_eq!(
+                all.matches(&format!("1.{n}\n")).count()
+                    + all.matches(&format!("1.{n}\r\n")).count(),
+                1,
+                "1.{n}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_cap_is_at_least_one() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = batched(transport.clone(), 0);
+        subscriber.notify(&release(1)).await.unwrap();
+        subscriber.notify(&release(2)).await.unwrap();
+        subscriber.flush().await.unwrap();
+        assert_eq!(transport.messages().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn without_batching_events_are_sent_as_they_arrive_and_flush_does_nothing() {
+        let transport = AsyncStubTransport::new_ok();
+        let subscriber = EmailSubscriber::with_transport(
+            transport.clone(),
+            "delve@example.test",
+            &recipients(&["ops@example.test"]),
+        )
+        .unwrap();
+
+        subscriber.notify(&release(1)).await.unwrap();
+        subscriber.notify(&release(2)).await.unwrap();
+        assert_eq!(transport.messages().await.len(), 2);
+        subscriber.flush().await.unwrap();
+        assert_eq!(transport.messages().await.len(), 2);
+    }
+
+    fn other_device(mut event: FirmwareEvent, vendor: &str, hardware: &str) -> FirmwareEvent {
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut event {
+            firmware.vendor = vendor.into();
+            firmware.hardware_targets = vec![hardware.into()];
+        }
+        event
+    }
+
+    #[test]
+    fn the_subject_says_how_many_devices_when_there_are_several() {
+        let one_vendor =
+            digest::sorted(vec![release(1), other_device(release(2), "acme", "rev-z")]);
+        assert_eq!(
+            digest::render_digest(&one_vendor, None).0,
+            "[delve] 2 firmware changes: acme (2 devices)"
+        );
+
+        let two_vendors =
+            digest::sorted(vec![release(1), other_device(release(2), "globex", "r1")]);
+        assert_eq!(
+            digest::render_digest(&two_vendors, None).0,
+            "[delve] 2 firmware changes: 2 devices"
+        );
+    }
+
+    #[test]
+    fn a_digest_groups_by_device_with_a_heading_each() {
+        let mut events = vec![
+            other_device(release(1), "globex", "r1"),
+            release(2),
+            release(3),
+        ];
+        // The heading carries the product name when there is one.
+        for event in &mut events {
+            if let FirmwareEvent::NewRelease { firmware, .. } = event {
+                if firmware.vendor == "acme" {
+                    firmware.display_name = Some("Switch Flex Mini".into());
+                }
+            }
+        }
+        let events = digest::sorted(events);
+        let (_, body) = digest::render_digest(&events, None);
+        let acme = body
+            .find("acme widget (rev-a+rev-b) - Switch Flex Mini")
+            .unwrap();
+        let globex = body.find("globex widget (r1)").unwrap();
+        assert!(acme < globex, "devices are in order: {body}");
+        // Two acme entries under one heading, newest first.
+        assert_eq!(body.matches("acme widget").count(), 1, "{body}");
+        assert!(
+            body.find("1.3").unwrap() < body.find("1.2").unwrap(),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_digest_entry_says_what_kind_of_change_it_is() {
+        let events = digest::sorted(vec![
+            release(1),
+            updated("1.0", "1.1", VersionDirection::Newer),
+            updated("1.1", "1.0", VersionDirection::Older),
+            updated("r1", "r2", VersionDirection::Unordered),
+            updated("1.0", "1.0", VersionDirection::Unordered),
+        ]);
+        let (_, body) = digest::render_digest(&events, None);
+        for expected in [
+            "  new        1.1\n",
+            "  updated    1.0 -> 1.1\n",
+            "  DOWNGRADED 1.1 -> 1.0\n",
+            "  changed    r1 -> r2\n",
+            "  rebuilt    1.0\n",
+        ] {
+            assert!(body.contains(expected), "missing {expected:?}: {body}");
+        }
+        // The release date, a short hash (and the old one for a change), the
+        // release notes and the source are with the entry.
+        assert!(body.contains("released 2026-09-01, sha256 "), "{body}");
+        // The fixture's changed `sha256` field is "aa" -> "bb".
+        assert!(body.contains("(was aa)"), "{body}");
+        assert!(
+            body.contains("notes https://acme.example.test/notes"),
+            "{body}"
+        );
+        assert!(
+            body.contains("https://acme.example.test/widget/fw"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn vendor_data_cannot_add_lines_to_a_digest_subject() {
+        let mut bad = release(1);
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut bad {
+            firmware.device_family = "widget\r\nBcc: attacker@example.test".into();
+        }
+        let events = digest::sorted(vec![bad, release(2)]);
+        let (subject, _) = digest::render_digest(&events, None);
+        assert!(
+            !subject.contains('\n') && !subject.contains('\r'),
+            "{subject:?}"
+        );
+    }
+
+    /// A transport that fails its second send and keeps the others.
+    struct FlakyTransport {
+        calls: std::sync::atomic::AtomicUsize,
+        sent: Mutex<Vec<String>>,
+    }
+
+    #[derive(Debug)]
+    struct Refused;
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "server refused the message")
+        }
+    }
+
+    #[async_trait]
+    impl AsyncTransport for FlakyTransport {
+        type Ok = ();
+        type Error = Refused;
+
+        async fn send_raw(
+            &self,
+            _envelope: &lettre::address::Envelope,
+            email: &[u8],
+        ) -> Result<(), Refused> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 1 {
+                return Err(Refused);
+            }
+            self.sent
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(email).into_owned());
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_message_does_not_stop_the_rest_and_is_reported() {
+        let subscriber = EmailSubscriber::with_transport(
+            FlakyTransport {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                sent: Mutex::new(Vec::new()),
+            },
+            "delve@example.test",
+            &recipients(&["ops@example.test"]),
+        )
+        .unwrap()
+        .batched(2);
+        for n in 1..=6 {
+            subscriber.notify(&release(n)).await.unwrap();
+        }
+
+        let err = subscriber.flush().await.unwrap_err();
+
+        assert!(err.to_string().contains("1 of 3 messages failed"), "{err}");
+        assert_eq!(
+            subscriber.transport.sent.lock().unwrap().len(),
+            2,
+            "the other two went out"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_transport_is_a_delivery_error_when_batching_too() {
+        let subscriber = EmailSubscriber::with_transport(
+            AsyncStubTransport::new_error(),
+            "delve@example.test",
+            &recipients(&["ops@example.test"]),
+        )
+        .unwrap()
+        .batched(50);
+        subscriber.notify(&release(1)).await.unwrap();
+        subscriber.notify(&release(2)).await.unwrap();
+
+        let err = subscriber.flush().await.unwrap_err();
         assert!(matches!(err, SubscriberError::Delivery(_)), "{err}");
     }
 }

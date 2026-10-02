@@ -54,6 +54,15 @@ pub enum SubscriberError {
 pub trait Subscriber: Send + Sync {
     fn id(&self) -> &'static str;
     async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError>;
+
+    /// Called once when a vendor's dig is over, after the last event, **whether
+    /// the dig succeeded or failed**. A subscriber that holds events back (the
+    /// email subscriber batches a dig's events into one message) sends them
+    /// here. The default does nothing, for subscribers that act on each event
+    /// as it arrives.
+    async fn flush(&self) -> Result<(), SubscriberError> {
+        Ok(())
+    }
 }
 
 /// Fans an event out to every registered subscriber concurrently. One
@@ -69,6 +78,17 @@ impl EventBus {
         Self { subscribers }
     }
 
+    /// Tells every subscriber the dig is over. Like `publish`, a failure is
+    /// logged and does not stop the others.
+    pub async fn flush(&self) {
+        let futures = self.subscribers.iter().map(|s| s.flush());
+        for result in futures::future::join_all(futures).await {
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "subscriber flush failed");
+            }
+        }
+    }
+
     pub async fn publish(&self, event: FirmwareEvent) {
         let futures = self.subscribers.iter().map(|s| s.notify(&event));
         for result in futures::future::join_all(futures).await {
@@ -76,5 +96,75 @@ impl EventBus {
                 tracing::warn!(error = %e, "subscriber notification failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct Flushed {
+        flushes: Arc<AtomicUsize>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl Subscriber for Flushed {
+        fn id(&self) -> &'static str {
+            "flushed"
+        }
+
+        async fn notify(&self, _event: &FirmwareEvent) -> Result<(), SubscriberError> {
+            Ok(())
+        }
+
+        async fn flush(&self) -> Result<(), SubscriberError> {
+            self.flushes.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                Err(SubscriberError::Delivery("down".into()))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn flush_reaches_every_subscriber_even_when_one_fails() {
+        let (a, b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let bus = EventBus::new(vec![
+            Box::new(Flushed {
+                flushes: a.clone(),
+                fail: true,
+            }),
+            Box::new(Flushed {
+                flushes: b.clone(),
+                fail: false,
+            }),
+        ]);
+
+        bus.flush().await;
+
+        assert_eq!((a.load(Ordering::SeqCst), b.load(Ordering::SeqCst)), (1, 1));
+    }
+
+    struct NoFlush;
+
+    #[async_trait]
+    impl Subscriber for NoFlush {
+        fn id(&self) -> &'static str {
+            "no-flush"
+        }
+
+        async fn notify(&self, _event: &FirmwareEvent) -> Result<(), SubscriberError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_that_does_not_batch_needs_no_flush() {
+        // The default `flush` does nothing, so existing subscribers are unchanged.
+        assert!(NoFlush.flush().await.is_ok());
     }
 }
