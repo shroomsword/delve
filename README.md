@@ -926,6 +926,11 @@ delve unearth --vendor cisco --device-family isr4000 --version 17.9.4a --out ./d
 delve unearth --id <uuid> --out ./downloads/
 ```
 
+`--out` is a file path, or a directory (an existing one, or a path ending in
+`/`, created if needed). In a directory the file is named
+`<vendor>-<hardware>-<version>.bin`, with characters that aren't safe in file
+names (`+`, `/`, spaces) replaced by `_`, and the command prints the path.
+
 After download, the sha256 is verified against the stored hash by
 default and fails loudly on mismatch, since this is scraped data from
 possibly-unofficial sources; `--no-verify` skips that check for cases
