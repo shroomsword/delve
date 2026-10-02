@@ -973,6 +973,7 @@ client_secret = "env:CISCO_CLIENT_SECRET"
 
 [vendors.settings.unifi]                        # non-secret, per-plugin settings
 models = ["U7PG2", "USMINI"]                    # see "Tracking only some models"
+products = ["unifi-firmware", "unifi-dream"]    # see "Tracking console products"
 
 [transport]
 default = "direct"                              # "direct" | "tor" | { socks5 = { addr = "..." } }
@@ -1036,22 +1037,30 @@ those responses. The API is **undocumented**, though, so Ubiquiti can
 change it without notice; `vendor-unifi/src/api.rs`'s module doc comment
 lists exactly what was verified.
 
-### Scope: `unifi-firmware` only
+### Scope: network devices by default, consoles opt-in
 
-The plugin tracks the API's `unifi-firmware` product only: **UniFi network
-devices** — access points, switches, gateways, and older Cloud Keys
-(about 200 models). The same API lists many other Ubiquiti products under
-different names, and **none of these are tracked yet**:
+By default the plugin tracks the API's `unifi-firmware` product: **UniFi
+network devices** — access points, switches, gateways, and older Cloud Keys
+(about 200 models). The API lists about 300 other products under their own
+names. Five are supported, chosen with `products` (see
+[Tracking console products](#tracking-console-products)):
 
-- UniFi OS consoles: `unifi-dream` (Dream Machines, Cloud Gateways),
-  `unifi-nvr`, `unifi-drive` (UNAS), `unifi-cloudkey` (newer Cloud Keys)
-- Protect cameras (`uvc`) and other Protect devices
+| Product | Covers |
+|---|---|
+| `unifi-firmware` (default) | access points, switches, gateways, Express |
+| `unifi-dream` | Dream Machines, Dream Router, Cloud Gateways, Express |
+| `unifi-nvr` | Network Video Recorders |
+| `unifi-drive` | UNAS network storage |
+| `unifi-cloudkey` | Cloud Key, Cloud Key Gen2 (+, Enterprise) |
+
+**Not tracked yet**, each needing its own check against live responses:
+
+- Protect cameras (`uvc`: its `platform` is the camera's chip, such as
+  `cv22`, not a model, and no record has a build number) and other Protect
+  devices
 - Access, Talk, Connect and other UniFi application devices
+- Application packages (`unifi-controller`, `unifi-protect`, ...)
 - Non-UniFi lines (airMAX, airFiber, EdgeRouter, EdgeSwitch, UISP, ...)
-
-Adding one is mostly a matter of widening the product filter in `api.rs`,
-but each has its own version quirks and should be checked the same way
-`unifi-firmware` was before it's enabled.
 
 ### How API fields map to `FirmwareMetadata`
 
@@ -1087,11 +1096,15 @@ delve catalog --vendor unifi --device-family UAP --latest   # newest firmware fo
 | `E7` | access points named "E7 ..." | 7 |
 | `UXG` | gateways named "Gateway ..." (Lite, Max, Pro, Enterprise, Fiber) | 5 |
 | `USG` | Security Gateways | 3 |
-| `UCK` | Cloud Keys | 3 |
-| `UDM` | Dream Machine and Dream Machine Pro | 2 |
-| `UX` | Express | 2 |
+| `UCK` | Cloud Keys | 4 |
+| `UDM` | Dream Machines (Pro, Pro Max, Special Edition, Beast) | 5 |
+| `UDR` | Dream Routers | 3 |
+| `UCG` | Cloud Gateways | 4 |
+| `UX` | Express | 3 |
+| `UNVR` | Network Video Recorders | 6 |
+| `UNAS` | UNAS network storage | 5 |
 
-The counts are model codes in the release channel in October 2026.
+The counts are model codes in the release channel in October 2026, across the five supported products.
 
 **Where the mapping comes from.** The firmware API has no product-line
 field, and the model codes don't say what a device is: `USWDA23` is a UPS,
@@ -1104,17 +1117,18 @@ module's doc comment has the exact rules. As a cross-check, models that share
 one firmware image (the API's `models` field) must be in one line, and none
 of the nine such groups spans two.
 
-**Models without a line.** 34 of the 197 codes are deliberately left out and
+**Models without a line.** 42 of the 228 codes are deliberately left out and
 keep their model code as `device_family`, as before: power products (UPS,
 SmartPower, power distribution), bridges, LTE and U5G devices, travel
-routers, a cable modem, `U7UKU` (a "Swiss Army Knife" that fits none of
-the lines above), and two codes Ubiquiti's list doesn't know (`USMULT` and
-`UXGPROV2`). A wrong guess would silently put a device in the wrong line,
+routers, a cable modem, the "Enterprise ..." consoles and the Dream Wall,
+`U7UKU` (a "Swiss Army Knife" that fits none of the lines above), and four
+codes Ubiquiti's list doesn't know (`USMULT`, `UXGPROV2`, `UNAS2` and
+`UNAS4`). A wrong guess would silently put a device in the wrong line,
 while leaving it out loses nothing.
 
 **Product names.** Each model also carries a product name (`USMINI` is
 "Switch Flex Mini", `U7PG2` is "Access Point AC Pro"), taken from the same
-Ubiquiti device list, for 195 of the 197 codes. It is display text only: it
+Ubiquiti device list, for 224 of the 228 codes. It is display text only: it
 is not part of the identity key and is not compared when deciding what
 changed. It shows in `catalog --long`, in the log line (`name=`), and as a
 `Product:` line in the email body.
@@ -1163,6 +1177,53 @@ upgrading:
    It only removes an old-style row when a copy of the same model and
    version exists under a line, so it can't remove the only copy. A fresh
    database needs none of this.
+
+### Tracking console products
+
+The UniFi OS consoles and storage devices are listed under their own
+products. Name the ones you want, in order of preference:
+
+```toml
+[vendors.settings.unifi]
+products = ["unifi-firmware", "unifi-dream", "unifi-nvr", "unifi-drive", "unifi-cloudkey"]
+```
+
+The default is `["unifi-firmware"]`. An empty list, or a name outside the
+five above, fails the dig with the supported names. Each product is one
+request, so the example is five requests and about 4,000 records (a dig took
+about 5 s in October 2026). The product lines are the same `device_family`
+values as everywhere else (`catalog --device-family UDM`, `UNVR`, `UNAS`, `UDR`,
+`UCG`), and the model code stays in `hardware_targets`. See
+[Product lines](#product-lines).
+
+**Where the same file is listed twice.** The API lists the Cloud Keys and the
+Express under both `unifi-firmware` and a console product, as one file (the
+same SHA-256) with a record of its own: 21 such pairs in October 2026. They
+share an identity key, so delve keeps one, from the product listed first in
+`products`. Keep `unifi-firmware` first and an existing database's entries,
+and their `source_url`, stay as they are.
+
+**What is left out.** `unifi-drive` also lists UniFi OS application packages
+for Debian (`uos-deb11-arm64`). They are software, not a device, so they are
+dropped.
+
+**With `models`.** One request per model, as in
+[Tracking only some models](#tracking-only-some-models), with no product
+filter, keeping the records of the listed `products`. A model whose product
+isn't listed fails the dig and says so, instead of tracking nothing.
+
+**One quirk.** Console records carry a rollout `probability` (`0.1`, `0.2`,
+...). It doesn't hide records, with one exception seen in October 2026: two
+`unifi-cloudkey` records with `probability` 0.5 were in about half of the
+list responses. Each shows up once, as a new release, whenever it first
+appears, and is stored from then on, so it doesn't repeat.
+
+**Adding a product to an existing database** makes its whole history look
+new: in a test (October 2026), enabling the other four products on a
+`unifi-firmware` database announced 607 releases (31 new, 576 updated).
+Run `delve dig --vendor unifi --redig` once after changing `products` to store
+them silently; as with `models`, that dig is silent for every model. This is
+the history problem reported in #46, not specific to UniFi.
 
 ### Requests per dig
 
@@ -1421,14 +1482,21 @@ exists because of it, not as a design decision made up front.
   unmapped models still named, an unknown model getting none). The ignored live test
   checks every model code Ubiquiti lists against the table.
   `discover` runs against a local mock of the list API: one request by
-  default, one request per distinct model with `models` set, dropping
-  other models if the server ignores the model filter, and failing on a
-  model with no firmware or an empty or non-list `models` setting.
-  Three live tests are marked `#[ignore]` so they don't run by default or
+  default, one request per product with `products` set, one request per
+  distinct model with `models` set, dropping other models if the server
+  ignores the model filter, and failing on a model with no firmware, a
+  model whose product isn't tracked, an unknown, empty or non-list
+  `products`, or an empty or non-list `models` setting. A file listed under
+  two products is kept once, from the one named first, whichever order the
+  API returns them in, and the `uos-*` packages are dropped. The console
+  fixture (`fixtures/console_list.json`) is real records from the live API.
+  Four live tests are marked `#[ignore]` so they don't run by default or
   in CI; run them with `cargo test -p vendor-unifi -- --ignored`. One runs
-  `discover` and `metadata` over every release record; one runs a
-  per-model `discover`; the third downloads a ~500 KB image with an empty
-  cache (as `unearth` does) and checks it against the published SHA-256.
+  `discover` and `metadata` over every release record; one does the same
+  over all five products and checks every record has a SHA-256 and a unique
+  identity; one runs a per-model `discover`; the last downloads a ~500 KB image
+  with an empty cache (as `unearth` does) and checks it against the published
+  SHA-256.
 
 - **`delve-cli/src/commands/{dig,catalog,provenance}.rs`**: each command
   driven end to end against the real engine and an in-memory

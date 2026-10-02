@@ -1,0 +1,230 @@
+{
+  "_embedded": {
+    "firmware": [
+      {
+        "channel": "release",
+        "created": "2026-06-03T16:03:03Z",
+        "file_size": 929896710,
+        "id": "d4f96cba-6b6d-42f7-bfac-1f6684ab8d2d",
+        "md5": "1477dcfc78d49c25f616068d579c0e25",
+        "sha256_checksum": "b2997573a232606dcea09f53aad1cde1379a964783d2357f86277483a29e8a2a",
+        "platform": "UX",
+        "product": "unifi-dream",
+        "updated": "2026-06-03T16:21:29Z",
+        "tags": {
+          "ubnt_version": "UEX.ipq5018.v4.0.15.bc4546f.260527.2020"
+        },
+        "version": "v4.0.15+17067",
+        "version_major": 4,
+        "version_minor": 0,
+        "version_patch": 15,
+        "version_build": "17067",
+        "probability": 0.1,
+        "probability_computed": 1,
+        "release_date": "2026-06-07T16:00:00Z",
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/d4f96cba-6b6d-42f7-bfac-1f6684ab8d2d"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/d4f96cba-6b6d-42f7-bfac-1f6684ab8d2d/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/d4f96cba-6b6d-42f7-bfac-1f6684ab8d2d/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-dream/c3a4-UX-4.0.15-d4f96cba-6b6d-42f7-bfac-1f6684ab8d2d.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2026-09-10T13:29:52Z",
+        "file_size": 950761114,
+        "id": "b4792e80-df22-4d51-b0f2-4e8b8d7c194a",
+        "md5": "5362932ffe02a3e12a7cd93b047b4607",
+        "sha256_checksum": "b8e5711955dd0e4209466d54b0b86086c18ae7062baaace7bd2e380ee4600ae3",
+        "platform": "UDMPRO",
+        "product": "unifi-dream",
+        "updated": "2026-09-10T13:29:52Z",
+        "tags": {
+          "ubnt_version": "UDMPRO.al324.v5.1.33.44ce47b.260909.0025"
+        },
+        "version": "v5.1.33+44ce47b",
+        "version_major": 5,
+        "version_minor": 1,
+        "version_patch": 33,
+        "version_build": "44ce47b",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/b4792e80-df22-4d51-b0f2-4e8b8d7c194a"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/b4792e80-df22-4d51-b0f2-4e8b8d7c194a/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/b4792e80-df22-4d51-b0f2-4e8b8d7c194a/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-dream/c3e0-UDMPRO-5.1.33-9d7d56b0-00d1-4895-a222-94a736650c67.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2026-09-10T13:29:52Z",
+        "file_size": 892958448,
+        "id": "fdee3896-a5d2-4b4c-a84f-1f37bb3a274d",
+        "md5": "5345709c2c0360d8c6aa58b7f0e966ec",
+        "sha256_checksum": "e24a7dea42b0cf6c03fe6da176b4e59bf65ed1e843d8886b2d938ee2d5617e9f",
+        "platform": "UNVRPRO",
+        "product": "unifi-nvr",
+        "updated": "2026-09-10T13:29:52Z",
+        "tags": {
+          "ubnt_version": "UNVRPRO.al324.v5.1.33.44ce47b.260909.0025"
+        },
+        "version": "v5.1.33+44ce47b",
+        "version_major": 5,
+        "version_minor": 1,
+        "version_patch": 33,
+        "version_build": "44ce47b",
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/fdee3896-a5d2-4b4c-a84f-1f37bb3a274d"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/fdee3896-a5d2-4b4c-a84f-1f37bb3a274d/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/fdee3896-a5d2-4b4c-a84f-1f37bb3a274d/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-nvr/cb68-UNVRPRO-5.1.33-6e79cc84-6fd0-405d-88f9-5a57ef425a06.bin"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2025-10-23T09:06:35Z",
+        "file_size": 58949246,
+        "id": "08fb01aa-7cfc-4397-80ed-4221a29c6918",
+        "md5": "312c50bdaae01958cbce17b63af02098",
+        "sha256_checksum": "c61f0c768373d14aa2490df5ab842b69142a143782f202eec222c4a16c945232",
+        "platform": "uos-deb11-arm64",
+        "product": "unifi-drive",
+        "updated": "2025-10-23T09:06:35Z",
+        "version": "v3.2.14",
+        "version_major": 3,
+        "version_minor": 2,
+        "version_patch": 14,
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/08fb01aa-7cfc-4397-80ed-4221a29c6918"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/08fb01aa-7cfc-4397-80ed-4221a29c6918/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/08fb01aa-7cfc-4397-80ed-4221a29c6918/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-drive/393a-uos-deb11-arm64-3.2.14-f4af9290-a876-45c8-8f8e-e4c638343ecd.deb"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2026-09-01T09:57:34Z",
+        "file_size": 65277312,
+        "id": "7ec1f3be-0644-4b08-87ec-48522c5b1583",
+        "md5": "e7563cbdf1f4ce39d5a4496e262be7bc",
+        "sha256_checksum": "8d2400c19af1bdc5737d80844811a1dcce057ec7eec873f4003570258d9a6df5",
+        "platform": "uos-deb11-arm64",
+        "product": "unifi-drive",
+        "updated": "2026-09-01T09:57:34Z",
+        "version": "v4.4.9",
+        "version_major": 4,
+        "version_minor": 4,
+        "version_patch": 9,
+        "probability_computed": 0,
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/7ec1f3be-0644-4b08-87ec-48522c5b1583"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/7ec1f3be-0644-4b08-87ec-48522c5b1583/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/7ec1f3be-0644-4b08-87ec-48522c5b1583/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-drive/bd2c-uos-deb11-arm64-4.4.9-3217b67f-cc32-46a6-a6b6-8d649123378d.deb"
+          }
+        }
+      },
+      {
+        "channel": "release",
+        "created": "2021-05-19T11:12:11Z",
+        "file_size": 483403360,
+        "id": "1cf4bd82-62b6-4919-ac10-0cc5b69dc0b1",
+        "md5": "9efee21e0a8b5109e2c80f9efda572bd",
+        "sha256_checksum": "7a44968260c23555d72cdcb1c73c90608ce30cd6f91b977851c50f82f640436f",
+        "platform": "UCKG2",
+        "product": "unifi-cloudkey",
+        "updated": "2021-05-19T11:12:29Z",
+        "tags": {
+          "ubnt_version": "UCKG2.apq8053.v2.1.11.a7986ca.210510.2052"
+        },
+        "version": "v2.1.11+a7986ca",
+        "version_major": 2,
+        "version_minor": 1,
+        "version_patch": 11,
+        "version_build": "a7986ca",
+        "probability": 0.25,
+        "probability_computed": 1,
+        "release_date": "2021-05-21T00:00:00Z",
+        "_links": {
+          "self": {
+            "href": "https://fw-update.ui.com/api/firmware/1cf4bd82-62b6-4919-ac10-0cc5b69dc0b1"
+          },
+          "upload": [
+            {
+              "name": "data",
+              "href": "https://fw-update.ui.com/api/firmware/1cf4bd82-62b6-4919-ac10-0cc5b69dc0b1/data"
+            },
+            {
+              "name": "changelog",
+              "href": "https://fw-update.ui.com/api/firmware/1cf4bd82-62b6-4919-ac10-0cc5b69dc0b1/changelog"
+            }
+          ],
+          "data": {
+            "href": "https://fw-download.ubnt.com/data/unifi-cloudkey/e9cc-UCKG2-2.1.11-1cf4bd8262b64919ac100cc5b69dc0b1.bin"
+          }
+        }
+      }
+    ]
+  }
+}

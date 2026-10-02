@@ -22,12 +22,16 @@
 //! | `UAP` | every other access point (the AC and nanoHD generations and older) |
 //! | `USG` | a gateway named "Security Gateway ..." |
 //! | `UXG` | a console named "Gateway ..." |
-//! | `UDM` | the Dream Machine and Dream Machine Pro |
+//! | `UDM` | a console named "Dream Machine ..." (Pro, Pro Max, Special Edition, Beast) |
+//! | `UDR` | a console named "Dream Router ..." |
+//! | `UCG` | a console named "Cloud Gateway ..." |
 //! | `UX` | a console named "Express ..." |
 //! | `UCK` | a Cloud Key |
+//! | `UNVR` | a console named "Network Video Recorder ..." |
+//! | `UNAS` | a NAS named "UNAS ..." |
 //!
-//! Anything else (power, bridges, LTE, travel routers, and codes the file
-//! doesn't know) stays unmapped and keeps its model code as its
+//! Anything else (power, bridges, LTE, travel routers, the "Enterprise ..."
+//! consoles, the Dream Wall, and codes the file doesn't know) stays unmapped and keeps its model code as its
 //! `device_family`, as before. That's deliberate: a wrong guess would silently
 //! put a device in the wrong line, and not grouping it loses nothing.
 //!
@@ -106,20 +110,42 @@ const LINES: &[(&str, &str)] = &[
     ("UAPA6BA", "U7"),
     ("UAPA6BC", "E7"),
     ("UAPL6", "U6"),
+    ("UCGA6AD", "UCG"),
+    ("UCGF", "UCG"),
+    ("UCGMAX", "UCG"),
     ("UCK", "UCK"),
+    ("UCKENT", "UCK"),
     ("UCKG2", "UCK"),
     ("UCKP", "UCK"),
     ("UCXG", "UAP"),
     ("UDM", "UDM"),
     ("UDMA69B", "UX"),
     ("UDMB", "UAP"),
+    ("UDMEA4C", "UDM"),
     ("UDMPRO", "UDM"),
+    ("UDMPROMAX", "UDM"),
+    ("UDMPROSE", "UDM"),
+    ("UDR", "UDR"),
+    ("UDR5G", "UDR"),
+    ("UDR7", "UDR"),
+    ("UDRULT", "UCG"),
     ("UFLHD", "UAP"),
     ("UGW3", "USG"),
     ("UGW4", "USG"),
     ("UGWXG", "USG"),
     ("UHDIW", "UAP"),
     ("UKPW", "U7"),
+    ("UNAS2B", "UNAS"),
+    ("UNAS2W", "UNAS"),
+    ("UNASPRO", "UNAS"),
+    ("UNASPRO4", "UNAS"),
+    ("UNASPRO8", "UNAS"),
+    ("UNVR", "UNVR"),
+    ("UNVR4", "UNVR"),
+    ("UNVRAI4", "UNVR"),
+    ("UNVRAI8", "UNVR"),
+    ("UNVRINS", "UNVR"),
+    ("UNVRPRO", "UNVR"),
     ("US16P150", "USW"),
     ("US24", "USW"),
     ("US24P250", "USW"),
@@ -206,6 +232,7 @@ const LINES: &[(&str, &str)] = &[
     ("UXGB", "UXG"),
     ("UXGENT", "UXG"),
     ("UXGPRO", "UXG"),
+    ("UXMAX", "UX"),
     ("UXSDM", "UAP"),
 ];
 
@@ -217,6 +244,10 @@ const LINES: &[(&str, &str)] = &[
 const NAMES: &[(&str, &str)] = &[
     ("BZ2", "Access Point"),
     ("BZ2LR", "Access Point Long-Range"),
+    ("EFGCORE", "Enterprise Firewall Core"),
+    ("ENAS", "Enterprise NAS"),
+    ("ENVR", "Enterprise Network Video Recorder"),
+    ("ENVRCORE", "Enterprise Network Video Recorder Core"),
     ("S216150", "Switch 16 PoE 150W"),
     ("S224250", "Switch 24 PoE 250W"),
     ("S224500", "Switch 24 PoE 500W"),
@@ -284,8 +315,12 @@ const NAMES: &[(&str, &str)] = &[
     ("UAVAA06", "EAV Bridge"),
     ("UBB", "Building Bridge"),
     ("UBBXG", "Building Bridge XG"),
+    ("UCGA6AD", "Cloud Gateway Industrial"),
+    ("UCGF", "Cloud Gateway Fiber"),
+    ("UCGMAX", "Cloud Gateway Max"),
     ("UCI", "Cable Internet"),
     ("UCK", "CloudKey"),
+    ("UCKENT", "CloudKey Enterprise"),
     ("UCKG2", "CloudKey"),
     ("UCKP", "CloudKey+"),
     ("UCXG", "Access Point XG"),
@@ -295,7 +330,16 @@ const NAMES: &[(&str, &str)] = &[
     ("UDM", "Dream Machine"),
     ("UDMA69B", "Express 7"),
     ("UDMB", "Access Point BeaconHD"),
+    ("UDMEA4C", "Dream Machine Beast"),
+    ("UDMENT", "Enterprise Firewall"),
     ("UDMPRO", "Dream Machine Pro"),
+    ("UDMPROMAX", "Dream Machine Pro Max"),
+    ("UDMPROSE", "Dream Machine Special Edition"),
+    ("UDR", "Dream Router"),
+    ("UDR5G", "Dream Router 5G Max"),
+    ("UDR7", "Dream Router 7"),
+    ("UDRULT", "Cloud Gateway Ultra"),
+    ("UDW", "Dream Wall"),
     ("UFLHD", "Access Point FlexHD"),
     ("UGW3", "Security Gateway 3P"),
     ("UGW4", "Security Gateway Pro"),
@@ -309,6 +353,17 @@ const NAMES: &[(&str, &str)] = &[
     ("UMBBE631", "U5G Max Outdoor"),
     ("UMBBE633", "U5G Backup"),
     ("UMBBE634", "U5G Backup"),
+    ("UNAS2B", "UNAS 2"),
+    ("UNAS2W", "UNAS 2"),
+    ("UNASPRO", "UNAS Pro"),
+    ("UNASPRO4", "UNAS Pro 4"),
+    ("UNASPRO8", "UNAS Pro 8"),
+    ("UNVR", "Network Video Recorder"),
+    ("UNVR4", "Network Video Recorder"),
+    ("UNVRAI4", "Network Video Recorder Gen 2"),
+    ("UNVRAI8", "Network Video Recorder Gen 2 Pro"),
+    ("UNVRINS", "Network Video Recorder Instant"),
+    ("UNVRPRO", "Network Video Recorder Pro"),
     ("UP1", "SmartPower Plug"),
     ("UP6", "SmartPower Strip"),
     ("US16P150", "Switch 16 PoE 150W"),
@@ -409,6 +464,7 @@ const NAMES: &[(&str, &str)] = &[
     ("UXGB", "Gateway Max"),
     ("UXGENT", "Gateway Enterprise"),
     ("UXGPRO", "Gateway Pro"),
+    ("UXMAX", "Express 7"),
     ("UXSDM", "WiFi BaseStation XG"),
 ];
 
@@ -424,6 +480,10 @@ pub fn product_name(model: &str) -> Option<&'static str> {
 /// Kept so the live test can tell a known gap from a newly added model.
 #[cfg(test)]
 const UNMAPPED: &[&str] = &[
+    "EFGCORE",
+    "ENAS",
+    "ENVR",
+    "ENVRCORE",
     "U7UKU",
     "UACCEA03",
     "UACCMPOEAF",
@@ -435,6 +495,8 @@ const UNMAPPED: &[&str] = &[
     "UDB",
     "UDBA69F",
     "UDBE802",
+    "UDMENT",
+    "UDW",
     "ULTE",
     "ULTEPEU",
     "ULTEPUS",
@@ -442,6 +504,8 @@ const UNMAPPED: &[&str] = &[
     "UMBBE631",
     "UMBBE633",
     "UMBBE634",
+    "UNAS2",
+    "UNAS4",
     "UP1",
     "UP6",
     "USMULT",
@@ -489,6 +553,11 @@ mod tests {
         assert_eq!(product_line("UXGPRO"), Some("UXG"));
         assert_eq!(product_line("UDMPRO"), Some("UDM"));
         assert_eq!(product_line("UCKG2"), Some("UCK"));
+        assert_eq!(product_line("UDMPROMAX"), Some("UDM"));
+        assert_eq!(product_line("UDR7"), Some("UDR"));
+        assert_eq!(product_line("UCGMAX"), Some("UCG"));
+        assert_eq!(product_line("UNVRPRO"), Some("UNVR"));
+        assert_eq!(product_line("UNASPRO8"), Some("UNAS"));
     }
 
     #[test]
@@ -523,9 +592,9 @@ mod tests {
     }
 
     #[test]
-    fn the_known_unmapped_models_are_named_except_the_two_ubiquiti_does_not_know() {
+    fn the_known_unmapped_models_are_named_except_those_ubiquiti_does_not_know() {
         for code in UNMAPPED {
-            if !["USMULT", "UXGPROV2"].contains(code) {
+            if !["USMULT", "UXGPROV2", "UNAS2", "UNAS4"].contains(code) {
                 assert!(product_name(code).is_some(), "{code} has no name");
             }
         }
@@ -558,7 +627,8 @@ mod tests {
     #[test]
     fn only_the_documented_lines_are_used() {
         const DOCUMENTED: &[&str] = &[
-            "USW", "UAP", "U6", "U7", "E7", "USG", "UXG", "UDM", "UX", "UCK",
+            "USW", "UAP", "U6", "U7", "E7", "USG", "UXG", "UDM", "UDR", "UCG", "UX", "UCK", "UNVR",
+            "UNAS",
         ];
         for (code, line) in LINES {
             assert!(
@@ -574,16 +644,24 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live Ubiquiti API"]
     async fn live_every_model_code_is_mapped_or_known_unmapped() {
-        let body = reqwest::Client::new()
-            .get(crate::api::list_url(&crate::api::api_base(), None))
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
+        let mut records = Vec::new();
+        for product in crate::api::SUPPORTED_PRODUCTS {
+            let body = reqwest::Client::new()
+                .get(crate::api::list_url(
+                    &crate::api::api_base(),
+                    Some(product),
+                    None,
+                ))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            records.extend(crate::api::parse_list(&body).unwrap().records);
+        }
         let mut unknown: Vec<String> =
-            crate::api::select_records(crate::api::parse_list(&body).unwrap().records)
+            crate::api::select_records(records, crate::api::SUPPORTED_PRODUCTS)
                 .into_iter()
                 .map(|r| r.platform)
                 .filter(|p| product_line(p).is_none() && !UNMAPPED.contains(&p.as_str()))
