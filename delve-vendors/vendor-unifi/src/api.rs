@@ -27,6 +27,22 @@
 //!   (upload time) is present on all of them.
 //! - None of the `unifi-firmware` records has a `changelog` link, although
 //!   other Ubiquiti products in the same API do.
+//!
+//! The console products (`unifi-dream`, `unifi-nvr`, `unifi-drive`,
+//! `unifi-cloudkey`) were checked the same way in October 2026, with the same
+//! record shape, a `sha256_checksum` and a download link on every record, and
+//! no duplicate `(platform, version)` within a product. What differs:
+//!
+//! - Versions are `major.minor.patch+<git hash>`, where `unifi-firmware`
+//!   has numeric builds. The ordinal stops at the patch, as for the Cloud
+//!   Keys (see `version.rs`).
+//! - The Cloud Keys and the Express are listed under both `unifi-firmware`
+//!   and a console product, as the same file (21 pairs, identical SHA-256).
+//! - `unifi-drive` also lists `uos-*` application packages.
+//! - Records carry a rollout `probability`. It doesn't hide them, except for
+//!   two `unifi-cloudkey` records at 0.5 that were in only some responses.
+//! - `uvc` (Protect cameras) was looked at and left out: `platform` is the
+//!   camera's chip (`cv22`), not a model, and no record has a build number.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use delve_core::model::{FirmwareMetadata, FirmwareRef, VersionKey, VersionScheme};
@@ -39,12 +55,31 @@ use crate::version::parse_unifi_version;
 
 pub const API_BASE: &str = "https://fw-update.ui.com/api/firmware";
 
-/// The only product this plugin tracks for now: firmware for UniFi network
-/// devices (access points, switches, gateways, older Cloud Keys). The API
-/// lists UniFi OS consoles (`unifi-dream`, `unifi-nvr`, `unifi-drive`,
-/// `unifi-cloudkey`), Protect cameras (`uvc`), Access devices and more
-/// under separate product names — see the README's vendor-unifi section.
-pub const PRODUCT: &str = "unifi-firmware";
+/// What is tracked when `products` isn't set: firmware for UniFi network
+/// devices (access points, switches, gateways, older Cloud Keys). Adding a
+/// product to the default would announce hundreds of "new" devices to every
+/// existing user on their next dig, so the others are opt-in.
+pub const DEFAULT_PRODUCTS: &[&str] = &["unifi-firmware"];
+
+/// The products `products` may name: network device firmware, and the four
+/// UniFi OS console products, each checked against live responses (October
+/// 2026). The API lists about 300 more — Protect cameras (`uvc`, whose
+/// "platform" is the camera's chip, not a model), Access and Talk devices,
+/// airMAX, EdgeRouter, and application packages such as `unifi-controller` —
+/// which need their own check before they are added; see the README.
+///
+/// - `unifi-dream`: Dream Machines, Dream Routers, Cloud Gateways, Express.
+/// - `unifi-nvr`: Network Video Recorders.
+/// - `unifi-drive`: UNAS network storage (and some `uos-*` packages, which
+///   [`select_records`] drops).
+/// - `unifi-cloudkey`: Cloud Key and Cloud Key Gen2 (+, Enterprise).
+pub const SUPPORTED_PRODUCTS: &[&str] = &[
+    "unifi-firmware",
+    "unifi-dream",
+    "unifi-nvr",
+    "unifi-drive",
+    "unifi-cloudkey",
+];
 
 /// Only the stable release channel is tracked by default. `beta-public`
 /// exists too; see the README's vendor-unifi section for the note on
@@ -56,15 +91,17 @@ pub const CHANNEL: &str = "release";
 /// exactly this many records is treated as possibly truncated.
 pub const LIST_LIMIT: usize = 100_000;
 
-/// The list request for every tracked model, or — with `model` — for just
-/// that one model code (the API's `platform`, e.g. `U7PG2`).
-pub fn list_url(base: &Url, model: Option<&str>) -> Url {
+/// The list request for the release channel, narrowed to `product` and/or
+/// `model` (the API's `platform`, e.g. `U7PG2`) when given. Filters are
+/// ANDed, so one request can name only one product.
+pub fn list_url(base: &Url, product: Option<&str>, model: Option<&str>) -> Url {
     let mut url = base.clone();
     {
         let mut query = url.query_pairs_mut();
-        query
-            .append_pair("filter", &format!("eq~~product~~{PRODUCT}"))
-            .append_pair("filter", &format!("eq~~channel~~{CHANNEL}"));
+        if let Some(product) = product {
+            query.append_pair("filter", &format!("eq~~product~~{product}"));
+        }
+        query.append_pair("filter", &format!("eq~~channel~~{CHANNEL}"));
         if let Some(model) = model {
             query.append_pair("filter", &format!("eq~~platform~~{model}"));
         }
@@ -190,30 +227,54 @@ pub fn parse_detail(body: &str) -> Result<FirmwareRecord, PluginError> {
 ///   store with other products or beta builds.
 /// - Drops records with no downloadable file (one placeholder record,
 ///   `platform: "stat"`, has neither a file nor a hash).
-/// - Keeps only the newest record per `(platform, version)`. The store's
-///   identity key is `(vendor, device_family, hardware_targets, version)`,
-///   and two records sharing it would overwrite each other on every dig,
-///   flip-flopping between them and firing a spurious "rebuilt" event each
-///   time. None exist in the release channel today, but beta and release
-///   copies of one version do, so this matters once beta is tracked.
-pub fn select_records(records: Vec<FirmwareRecord>) -> Vec<FirmwareRecord> {
+/// - Drops `uos-*` platforms. `unifi-drive` lists the UniFi OS application
+///   packages for Debian under those names (`uos-deb11-arm64`); they are
+///   software for a console that has its own record, not a device.
+/// - Keeps one record per `(platform, version)`. The store's identity key is
+///   `(vendor, device_family, hardware_targets, version)`, and two records
+///   sharing it would overwrite each other on every dig, flip-flopping
+///   between them and firing a spurious "rebuilt" event each time. Within
+///   one product the newest record wins. Across products the product named
+///   first in `products` wins: the Cloud Keys and the Express are listed
+///   under both `unifi-firmware` and a console product, as the same file
+///   (identical SHA-256) — 21 such pairs in October 2026 — and picking by
+///   list order keeps the record, and so the `source_url`, that an existing
+///   `unifi-firmware` database already holds.
+pub fn select_records<S: AsRef<str>>(
+    records: Vec<FirmwareRecord>,
+    products: &[S],
+) -> Vec<FirmwareRecord> {
+    let rank = |product: &str| products.iter().position(|p| p.as_ref() == product);
+
     let mut selected: Vec<FirmwareRecord> = Vec::with_capacity(records.len());
     let mut index: std::collections::HashMap<(String, String), usize> =
         std::collections::HashMap::new();
 
     for record in records {
-        if record.product != PRODUCT || record.channel != CHANNEL || record.links.data.is_none() {
+        if rank(&record.product).is_none()
+            || record.channel != CHANNEL
+            || record.links.data.is_none()
+            || record.platform.starts_with("uos-")
+        {
             continue;
         }
         let key = (record.platform.clone(), record.version.clone());
         match index.get(&key) {
             Some(&i) => {
-                tracing::warn!(
-                    platform = %record.platform,
-                    version = %record.version,
-                    "UniFi API returned more than one record for the same model and version; keeping the newest"
-                );
-                if record.created > selected[i].created {
+                let kept = &selected[i];
+                let wins = match rank(&record.product).cmp(&rank(&kept.product)) {
+                    std::cmp::Ordering::Less => true,
+                    std::cmp::Ordering::Greater => false,
+                    std::cmp::Ordering::Equal => record.created > kept.created,
+                };
+                if kept.product == record.product {
+                    tracing::warn!(
+                        platform = %record.platform,
+                        version = %record.version,
+                        "UniFi API returned more than one record for the same model and version; keeping the newest"
+                    );
+                }
+                if wins {
                     selected[i] = record;
                 }
             }
@@ -311,7 +372,7 @@ mod tests {
 
     #[test]
     fn list_url_filters_on_product_and_release_channel() {
-        let url = list_url(&api_base(), None).to_string();
+        let url = list_url(&api_base(), Some("unifi-firmware"), None).to_string();
         assert!(url.starts_with(API_BASE));
         assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-firmware"));
         assert!(url.contains("filter=eq%7E%7Echannel%7E%7Erelease"));
@@ -320,8 +381,22 @@ mod tests {
     }
 
     #[test]
+    fn list_url_names_the_product_it_is_given() {
+        let url = list_url(&api_base(), Some("unifi-dream"), None).to_string();
+        assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-dream"));
+        assert!(!url.contains("unifi-firmware"));
+    }
+
+    #[test]
+    fn list_url_for_a_model_alone_has_no_product_filter() {
+        let url = list_url(&api_base(), None, Some("UDMPRO")).to_string();
+        assert!(!url.contains("product"));
+        assert!(url.contains("filter=eq%7E%7Eplatform%7E%7EUDMPRO"));
+    }
+
+    #[test]
     fn list_url_for_one_model_adds_a_platform_filter() {
-        let url = list_url(&api_base(), Some("U7PG2")).to_string();
+        let url = list_url(&api_base(), Some("unifi-firmware"), Some("U7PG2")).to_string();
         assert!(url.contains("filter=eq%7E%7Eproduct%7E%7Eunifi-firmware"));
         assert!(url.contains("filter=eq%7E%7Echannel%7E%7Erelease"));
         assert!(url.contains("filter=eq%7E%7Eplatform%7E%7EU7PG2"));
@@ -458,7 +533,7 @@ mod tests {
 
     #[test]
     fn selection_drops_the_placeholder_record_with_no_file() {
-        let selected = select_records(fixture_records());
+        let selected = select_records(fixture_records(), DEFAULT_PRODUCTS);
         assert_eq!(selected.len(), 6);
         assert!(selected.iter().all(|r| r.platform != "stat"));
     }
@@ -468,7 +543,7 @@ mod tests {
         let mut records = fixture_records();
         records[0].channel = "beta-public".to_string();
         records[1].product = "unifi-dream".to_string();
-        let selected = select_records(records);
+        let selected = select_records(records, DEFAULT_PRODUCTS);
         assert_eq!(selected.len(), 4);
     }
 
@@ -479,14 +554,110 @@ mod tests {
         older.id = "older".to_string();
         older.created = newer.created - chrono::Duration::days(30);
 
-        let selected = select_records(vec![older.clone(), newer.clone()]);
+        let selected = select_records(vec![older.clone(), newer.clone()], DEFAULT_PRODUCTS);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, newer.id);
 
         // Same result regardless of the order the API returns them in.
-        let selected = select_records(vec![newer.clone(), older]);
+        let selected = select_records(vec![newer.clone(), older], DEFAULT_PRODUCTS);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, newer.id);
+    }
+
+    const CONSOLE_FIXTURE: &str = include_str!("fixtures/console_list.json");
+
+    /// Real records from the four console products. The Express (`UX`) and
+    /// Cloud Key Gen2 (`UCKG2`) records are the same files as the
+    /// `unifi-firmware` fixture's, which the API lists under both products.
+    fn console_records() -> Vec<FirmwareRecord> {
+        parse_list(CONSOLE_FIXTURE).unwrap().records
+    }
+
+    fn console(product: &str, platform: &str) -> FirmwareRecord {
+        console_records()
+            .into_iter()
+            .find(|r| r.product == product && r.platform == platform)
+            .unwrap_or_else(|| panic!("console fixture has no {product} {platform} record"))
+    }
+
+    const FIRMWARE_AND_DREAM: &[&str] = &["unifi-firmware", "unifi-dream"];
+
+    #[test]
+    fn console_records_map_to_their_product_line_and_name() {
+        let meta = record_to_metadata(&console("unifi-dream", "UDMPRO"), "unifi");
+        assert_eq!(meta.device_family, "UDM");
+        assert_eq!(meta.hardware_targets, vec!["UDMPRO".to_string()]);
+        assert_eq!(meta.display_name.as_deref(), Some("Dream Machine Pro"));
+        assert_eq!(meta.version.raw, "v5.1.33+44ce47b");
+        // A git-hash build has no order, so the ordinal stops at the patch.
+        assert_eq!(meta.version.ordinal, Some(vec![5, 1, 33]));
+        assert!(meta.sha256.is_some());
+
+        let nvr = record_to_metadata(&console("unifi-nvr", "UNVRPRO"), "unifi");
+        assert_eq!(nvr.device_family, "UNVR");
+        assert_eq!(
+            nvr.display_name.as_deref(),
+            Some("Network Video Recorder Pro")
+        );
+    }
+
+    #[test]
+    fn selection_keeps_the_console_products_that_are_asked_for() {
+        let mut records = fixture_records();
+        records.extend(console_records());
+
+        let only_firmware = select_records(records.clone(), DEFAULT_PRODUCTS);
+        assert!(only_firmware.iter().all(|r| r.product == "unifi-firmware"));
+
+        let with_nvr = select_records(records, &["unifi-firmware", "unifi-nvr"]);
+        assert!(with_nvr.iter().any(|r| r.platform == "UNVRPRO"));
+        assert!(with_nvr.iter().all(|r| r.product != "unifi-dream"));
+    }
+
+    #[test]
+    fn a_file_listed_under_two_products_is_kept_once_from_the_first_listed() {
+        // The Express firmware v4.0.15 is in both unifi-firmware and
+        // unifi-dream, with the same SHA-256.
+        let firmware = record("UX");
+        let dream = console("unifi-dream", "UX");
+        assert_eq!(firmware.version, dream.version);
+        assert_eq!(firmware.sha256_checksum, dream.sha256_checksum);
+        assert_ne!(firmware.id, dream.id);
+
+        for records in [
+            vec![firmware.clone(), dream.clone()],
+            vec![dream.clone(), firmware.clone()],
+        ] {
+            let selected = select_records(records.clone(), FIRMWARE_AND_DREAM);
+            let ux: Vec<_> = selected.iter().filter(|r| r.platform == "UX").collect();
+            assert_eq!(ux.len(), 1);
+            assert_eq!(ux[0].id, firmware.id);
+
+            let selected = select_records(records, &["unifi-dream", "unifi-firmware"]);
+            let ux: Vec<_> = selected.iter().filter(|r| r.platform == "UX").collect();
+            assert_eq!(ux.len(), 1);
+            assert_eq!(ux[0].id, dream.id);
+        }
+    }
+
+    #[test]
+    fn selection_drops_the_uos_application_packages() {
+        let records = console_records();
+        assert!(records.iter().any(|r| r.platform == "uos-deb11-arm64"));
+        let selected = select_records(records, SUPPORTED_PRODUCTS);
+        assert!(selected.iter().all(|r| !r.platform.starts_with("uos-")));
+        assert_eq!(selected.len(), 4);
+    }
+
+    #[test]
+    fn every_supported_product_is_a_distinct_name_and_the_default_is_supported() {
+        let mut names = SUPPORTED_PRODUCTS.to_vec();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), SUPPORTED_PRODUCTS.len());
+        assert!(DEFAULT_PRODUCTS
+            .iter()
+            .all(|p| SUPPORTED_PRODUCTS.contains(p)));
     }
 
     #[test]

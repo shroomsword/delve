@@ -1,22 +1,24 @@
 //! UniFi vendor plugin.
 //!
-//! Tracks firmware for **UniFi network devices only** — the API's
+//! Tracks firmware for **UniFi network devices** by default — the API's
 //! `unifi-firmware` product: access points, switches, gateways, and older
-//! Cloud Keys. UniFi OS consoles (Dream Machines, UNVR, UNAS), Protect
-//! cameras, Access devices and the rest of Ubiquiti's catalogue are listed
-//! under other product names in the same API and are not tracked yet. See
-//! the README's vendor-unifi section for the scope and the items noted
-//! there to revisit.
+//! Cloud Keys. The `products` setting under `[vendors.settings.unifi]` adds
+//! the UniFi OS console products (`unifi-dream`, `unifi-nvr`, `unifi-drive`,
+//! `unifi-cloudkey`); see `api::SUPPORTED_PRODUCTS` in `api.rs`. Protect cameras,
+//! Access devices and the rest of Ubiquiti's catalogue are listed under other
+//! product names in the same API and are not tracked yet. See the README's
+//! vendor-unifi section for the scope and the items noted there to revisit.
 //!
 //! Data comes from Ubiquiti's firmware update API
 //! (`https://fw-update.ui.com/api/firmware`), which needs no credentials.
 //! See `api.rs`'s module doc comment for what was verified against live
 //! responses.
 //!
-//! **One request per dig**, by default: `discover()` fetches every release
-//! record in a single list request. With `models` set under
-//! `[vendors.settings.unifi]`, it instead makes one list request per model
-//! and tracks only those models. Either way it caches the full records in
+//! **One request per product per dig**, by default one request in all:
+//! `discover()` fetches every release record of each tracked product in a
+//! single list request (the API ANDs its filters, so one request can't name
+//! two products). With `models` set under `[vendors.settings.unifi]`, it
+//! instead makes one list request per model and tracks only those models. Either way it caches the full records in
 //! memory, keyed by each record's own API URL (the `FirmwareRef::source_url`
 //! it hands back). `metadata()` then answers from that cache without a request of
 //! its own, and removes each record as it does, so the cache shrinks as the
@@ -62,14 +64,15 @@ impl UnifiPlugin {
         }
     }
 
-    /// Fetches and parses one list request — every tracked model, or only
-    /// `model` — and fails if the response may have been truncated.
+    /// Fetches and parses one list request — for `product`, `model`, or
+    /// both — and fails if the response may have been truncated.
     async fn fetch_list(
         &self,
         ctx: &ScrapeContext,
+        product: Option<&str>,
         model: Option<&str>,
     ) -> Result<api::ParsedList, PluginError> {
-        let url = api::list_url(&self.api_base, model);
+        let url = api::list_url(&self.api_base, product, model);
         let body = get_text(ctx, url.as_str()).await?;
         let parsed = api::parse_list(&body)?;
 
@@ -89,14 +92,35 @@ impl UnifiPlugin {
         Ok(parsed)
     }
 
-    /// Every release record for the models in `models`, one request each.
-    /// Re-checks each record's model in case the server ignored the filter,
-    /// and fails on a model with no records at all — almost always a
-    /// mistyped model code, which would otherwise silently track nothing.
+    /// Every release record for each product in `products`, one request per
+    /// product (the API ANDs its filters, so one request can't name two).
+    async fn fetch_products(
+        &self,
+        ctx: &ScrapeContext,
+        products: &[String],
+    ) -> Result<(Vec<FirmwareRecord>, usize), PluginError> {
+        let mut records = Vec::new();
+        let mut total = 0;
+        for product in products {
+            let parsed = self.fetch_list(ctx, Some(product), None).await?;
+            total += parsed.total;
+            records.extend(parsed.records);
+        }
+        Ok((records, total))
+    }
+
+    /// Every release record for the models in `models`, one request each
+    /// with no product filter — a model code belongs to one device, so one
+    /// request finds it whichever tracked product lists it — keeping only
+    /// the records of `products`. Re-checks each record's model in case the
+    /// server ignored the filter, and fails on a model with no records at all
+    /// — almost always a mistyped model code, or one in a product that isn't
+    /// tracked, which would otherwise silently track nothing.
     async fn fetch_models(
         &self,
         ctx: &ScrapeContext,
         models: &[String],
+        products: &[String],
     ) -> Result<(Vec<FirmwareRecord>, usize), PluginError> {
         if models.is_empty() {
             return Err(PluginError::Rejected(
@@ -111,18 +135,58 @@ impl UnifiPlugin {
             if !seen.insert(model.as_str()) {
                 continue;
             }
-            let parsed = self.fetch_list(ctx, Some(model)).await?;
+            let parsed = self.fetch_list(ctx, None, Some(model)).await?;
             total += parsed.total;
             let before = records.len();
-            records.extend(parsed.records.into_iter().filter(|r| &r.platform == model));
+            records.extend(
+                parsed
+                    .records
+                    .into_iter()
+                    .filter(|r| &r.platform == model && products.contains(&r.product)),
+            );
             if records.len() == before {
                 return Err(PluginError::Rejected(format!(
-                    "no UniFi release firmware found for model '{model}' — check the model code \
-                     in [vendors.settings.unifi] models (the API's platform, e.g. U7PG2)"
+                    "no UniFi release firmware found for model '{model}' in {} — check the model \
+                     code in [vendors.settings.unifi] models (the API's platform, e.g. U7PG2), and \
+                     that its product is listed in products",
+                    products.join(", ")
                 )));
             }
         }
         Ok((records, total))
+    }
+
+    /// The products to track: `products` from the plugin's settings, or
+    /// [`api::DEFAULT_PRODUCTS`]. Rejects an empty list and any name outside
+    /// [`api::SUPPORTED_PRODUCTS`], and drops repeats (keeping the first, which
+    /// is the one that wins when two products list the same file).
+    fn products(ctx: &ScrapeContext) -> Result<Vec<String>, PluginError> {
+        let Some(requested) = ctx.setting_list("products")? else {
+            return Ok(api::DEFAULT_PRODUCTS
+                .iter()
+                .map(|p| p.to_string())
+                .collect());
+        };
+        if requested.is_empty() {
+            return Err(PluginError::Rejected(
+                "[vendors.settings.unifi] products is empty; remove it to track unifi-firmware"
+                    .into(),
+            ));
+        }
+        let mut products: Vec<String> = Vec::new();
+        for product in requested {
+            if !api::SUPPORTED_PRODUCTS.contains(&product.as_str()) {
+                return Err(PluginError::Rejected(format!(
+                    "unknown UniFi product '{product}' in [vendors.settings.unifi] products; \
+                     supported: {}",
+                    api::SUPPORTED_PRODUCTS.join(", ")
+                )));
+            }
+            if !products.contains(product) {
+                products.push(product.clone());
+            }
+        }
+        Ok(products)
     }
 
     /// The cached record for `source_url`. With `consume`, the record is
@@ -193,15 +257,13 @@ impl VendorPlugin for UnifiPlugin {
     }
 
     async fn discover(&self, ctx: &ScrapeContext) -> Result<Vec<FirmwareRef>, PluginError> {
+        let products = Self::products(ctx)?;
         let (records, total) = match ctx.setting_list("models")? {
-            Some(models) => self.fetch_models(ctx, models).await?,
-            None => {
-                let parsed = self.fetch_list(ctx, None).await?;
-                (parsed.records, parsed.total)
-            }
+            Some(models) => self.fetch_models(ctx, models, &products).await?,
+            None => self.fetch_products(ctx, &products).await?,
         };
 
-        let records = api::select_records(records);
+        let records = api::select_records(records, &products);
         tracing::info!(
             vendor = "unifi",
             received = total,
@@ -346,21 +408,35 @@ mod tests {
         honor_platform_filter: bool,
         extra: Vec<serde_json::Value>,
     ) -> (UnifiPlugin, MockServer) {
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("fixtures/firmware_list.json")).unwrap();
+        // The device firmware fixture followed by the console one, as the
+        // API's single list holds both; the product filter picks between them.
+        let mut fixture: Vec<serde_json::Value> = Vec::new();
+        for body in [
+            include_str!("fixtures/firmware_list.json"),
+            include_str!("fixtures/console_list.json"),
+        ] {
+            let list: serde_json::Value = serde_json::from_str(body).unwrap();
+            fixture.extend(list["_embedded"]["firmware"].as_array().unwrap().clone());
+        }
 
         let server = MockServer::start(move |request| {
             let url = request.url();
-            let platform = url.query_pairs().find_map(|(k, v)| {
-                (k == "filter")
-                    .then(|| v.strip_prefix("eq~~platform~~").map(String::from))
-                    .flatten()
-            });
+            let filter = |name: &str| {
+                url.query_pairs().find_map(|(k, v)| {
+                    (k == "filter")
+                        .then(|| v.strip_prefix(&format!("eq~~{name}~~")).map(String::from))
+                        .flatten()
+                })
+            };
+            let platform = filter("platform");
+            let product = filter("product");
 
-            let firmware: Vec<&serde_json::Value> = fixture["_embedded"]["firmware"]
-                .as_array()
-                .unwrap()
+            let firmware: Vec<&serde_json::Value> = fixture
                 .iter()
+                .filter(|r| match &product {
+                    Some(p) => r["product"] == p.as_str(),
+                    None => true,
+                })
                 .filter(|r| match (&platform, honor_platform_filter) {
                     (Some(p), true) => r["platform"] == p.as_str(),
                     _ => true,
@@ -416,6 +492,161 @@ mod tests {
         let meta = plugin.metadata(&ctx, &refs[0]).await.unwrap();
         assert_eq!(meta.device_family, refs[0].device_family);
         assert_eq!(server.requests().len(), 2);
+    }
+
+    /// A context tracking `products` (and, if given, `models`).
+    fn ctx_with_products(products: &[&str], models_setting: Option<SettingValue>) -> ScrapeContext {
+        let mut settings: Settings = models_setting
+            .map(|m| Settings::from([("models".to_string(), m)]))
+            .unwrap_or_default();
+        settings.insert(
+            "products".to_string(),
+            SettingValue::List(products.iter().map(|p| p.to_string()).collect()),
+        );
+        ctx_with_models(None).with_settings(settings)
+    }
+
+    fn product_filters(server: &MockServer) -> Vec<String> {
+        queries(server)
+            .iter()
+            .map(|q| {
+                q.split('&')
+                    .find_map(|kv| kv.strip_prefix("filter=eq%7E%7Eproduct%7E%7E"))
+                    .unwrap_or("-")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_default_tracks_device_firmware_only() {
+        let (plugin, server) = mock_api(true);
+        plugin.discover(&ctx_with_models(None)).await.unwrap();
+        assert_eq!(product_filters(&server), ["unifi-firmware"]);
+    }
+
+    #[tokio::test]
+    async fn products_setting_makes_one_request_per_product() {
+        let (plugin, server) = mock_api(true);
+        let ctx = ctx_with_products(&["unifi-firmware", "unifi-dream", "unifi-nvr"], None);
+        let refs = plugin.discover(&ctx).await.unwrap();
+
+        assert_eq!(
+            product_filters(&server),
+            ["unifi-firmware", "unifi-dream", "unifi-nvr"]
+        );
+        // The six device firmware models, plus UDMPRO and UNVRPRO. The
+        // Express is in both firmware and dream; it is kept once.
+        assert_eq!(
+            platforms(&refs),
+            ["UAP", "UAP", "UCK", "UDM", "UNVR", "USW", "UX", "UXG"]
+        );
+
+        let udm = refs.iter().find(|r| r.device_family == "UDM").unwrap();
+        let meta = plugin.metadata(&ctx, udm).await.unwrap();
+        assert_eq!(meta.hardware_targets, vec!["UDMPRO".to_string()]);
+        assert_eq!(meta.display_name.as_deref(), Some("Dream Machine Pro"));
+        assert_eq!(
+            server.requests().len(),
+            3,
+            "metadata is served from the cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_in_two_products_comes_from_the_first_listed_one() {
+        let (plugin, _server) = mock_api(true);
+        let source_of_ux = |products: &[&str]| {
+            let plugin = &plugin;
+            let ctx = ctx_with_products(products, None);
+            async move {
+                let refs = plugin.discover(&ctx).await.unwrap();
+                let ux: Vec<_> = refs.iter().filter(|r| r.device_family == "UX").collect();
+                assert_eq!(ux.len(), 1);
+                ux[0].source_url.to_string()
+            }
+        };
+        let from_firmware = source_of_ux(&["unifi-firmware", "unifi-dream"]).await;
+        let from_dream = source_of_ux(&["unifi-dream", "unifi-firmware"]).await;
+        assert_ne!(from_firmware, from_dream);
+    }
+
+    #[tokio::test]
+    async fn the_uos_packages_in_unifi_drive_are_not_tracked() {
+        let (plugin, _server) = mock_api(true);
+        let refs = plugin
+            .discover(&ctx_with_products(&["unifi-drive"], None))
+            .await
+            .unwrap();
+        assert!(refs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_bad_products_setting_is_rejected_before_any_request() {
+        let (plugin, server) = mock_api(true);
+
+        let err = plugin
+            .discover(&ctx_with_products(&[], None))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("products is empty"), "{err}");
+
+        let err = plugin
+            .discover(&ctx_with_products(&["unifi-firmware", "uvc"], None))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PluginError::Rejected(_)), "{err}");
+        let message = err.to_string();
+        assert!(message.contains("unknown UniFi product 'uvc'"), "{message}");
+        assert!(
+            message.contains("unifi-dream"),
+            "lists what is supported: {message}"
+        );
+
+        let text = ctx_with_models(None).with_settings(Settings::from([(
+            "products".to_string(),
+            SettingValue::Text("unifi-dream".into()),
+        )]));
+        let err = plugin.discover(&text).await.unwrap_err();
+        assert!(err.to_string().contains("must be a list"), "{err}");
+
+        assert!(server.requests().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repeated_product_is_requested_once() {
+        let (plugin, server) = mock_api(true);
+        plugin
+            .discover(&ctx_with_products(&["unifi-nvr", "unifi-nvr"], None))
+            .await
+            .unwrap();
+        assert_eq!(product_filters(&server), ["unifi-nvr"]);
+    }
+
+    #[tokio::test]
+    async fn a_model_in_an_untracked_product_names_the_setting_to_change() {
+        let (plugin, _server) = mock_api(true);
+        let err = plugin
+            .discover(&ctx_with_models(models(&["UDMPRO"])))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PluginError::Rejected(_)), "{err}");
+        assert!(err.to_string().contains("listed in products"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn models_in_a_tracked_console_product_are_found_with_one_request_each() {
+        let (plugin, server) = mock_api(true);
+        let ctx = ctx_with_products(
+            &["unifi-firmware", "unifi-dream"],
+            models(&["UDMPRO", "USMINI"]),
+        );
+        let refs = plugin.discover(&ctx).await.unwrap();
+
+        let seen = queries(&server);
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen.iter().all(|q| !q.contains("product")), "{seen:?}");
+        assert_eq!(platforms(&refs), ["UDM", "USW"]);
     }
 
     #[tokio::test]
@@ -620,6 +851,38 @@ mod tests {
             refs.len(),
             "every tracked record should have a SHA-256"
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live Ubiquiti API"]
+    async fn live_every_supported_product_discovers_with_a_sha256_and_unique_identities() {
+        let plugin = UnifiPlugin::new();
+        let ctx = ctx().with_settings(Settings::from([(
+            "products".to_string(),
+            SettingValue::List(
+                api::SUPPORTED_PRODUCTS
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect(),
+            ),
+        )]));
+        let refs = plugin.discover(&ctx).await.unwrap();
+
+        let mut identities = std::collections::HashSet::new();
+        for r in &refs {
+            let meta = plugin.metadata(&ctx, r).await.unwrap();
+            assert!(meta.sha256.is_some(), "{} has no SHA-256", meta.source_url);
+            assert!(
+                identities.insert((
+                    meta.device_family.clone(),
+                    meta.hardware_targets.clone(),
+                    meta.version.raw.clone()
+                )),
+                "two records share an identity: {}",
+                meta.source_url
+            );
+        }
+        assert!(refs.len() > 3800, "got {} records", refs.len());
     }
 
     #[tokio::test]
