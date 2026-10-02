@@ -34,6 +34,7 @@ use delve_core::plugin::PluginError;
 use serde::Deserialize;
 use url::Url;
 
+use crate::product_line::device_family;
 use crate::version::parse_unifi_version;
 
 pub const API_BASE: &str = "https://fw-update.ui.com/api/firmware";
@@ -225,13 +226,13 @@ pub fn select_records(records: Vec<FirmwareRecord>) -> Vec<FirmwareRecord> {
     selected
 }
 
-/// `device_family` and `hardware_targets` are both the model code for
-/// now. See the README's vendor-unifi section for the planned move to
-/// product-line families (`USW`, `UXG`, `U7`, `U6`, ...).
+/// `device_family` is the model's product line (`USW`, `UAP`, `U7`, ...)
+/// when it has one, and its model code otherwise; `hardware_targets` is
+/// always the model code. See `product_line.rs`.
 pub fn record_to_ref(record: &FirmwareRecord, vendor: &str) -> FirmwareRef {
     FirmwareRef {
         vendor: vendor.to_string(),
-        device_family: record.platform.clone(),
+        device_family: device_family(&record.platform).to_string(),
         source_url: record.links.self_link.href.clone(),
         discovered_at: Utc::now(),
     }
@@ -252,7 +253,7 @@ pub fn record_to_metadata(record: &FirmwareRecord, vendor: &str) -> FirmwareMeta
         // from the originating FirmwareRef; set to matching values anyway
         // so this is correct when called outside the engine too.
         vendor: vendor.to_string(),
-        device_family: record.platform.clone(),
+        device_family: device_family(&record.platform).to_string(),
         source_url: record.links.self_link.href.clone(),
         version,
         release_date: Some(release_date(record)),
@@ -374,7 +375,8 @@ mod tests {
     #[test]
     fn maps_a_record_to_metadata() {
         let meta = record_to_metadata(&record("USMINI"), "unifi");
-        assert_eq!(meta.device_family, "USMINI");
+        // The family is the product line; the model code stays the hardware.
+        assert_eq!(meta.device_family, "USW");
         assert_eq!(meta.hardware_targets, vec!["USMINI".to_string()]);
         assert_eq!(meta.version.raw, "v1.6.3+574");
         assert_eq!(meta.version.ordinal, Some(vec![1, 6, 3, 574]));
@@ -405,11 +407,33 @@ mod tests {
     }
 
     #[test]
+    fn a_model_with_no_product_line_keeps_its_code_as_its_family() {
+        let mut r = record("USMINI");
+        r.platform = "USPRPS".to_string(); // a power product: not in any line
+        let meta = record_to_metadata(&r, "unifi");
+        assert_eq!(meta.device_family, "USPRPS");
+        assert_eq!(meta.hardware_targets, vec!["USPRPS".to_string()]);
+        assert_eq!(record_to_ref(&r, "unifi").device_family, "USPRPS");
+    }
+
+    #[test]
+    fn two_models_in_one_line_stay_distinct_by_hardware() {
+        // Both are in the UAP line, so the store tells them apart by
+        // hardware target and not by family.
+        let mut lite = record("U7PG2");
+        lite.platform = "U7LT".to_string(); // the fixture has no U7LT record
+        let a = record_to_metadata(&record("U7PG2"), "unifi");
+        let b = record_to_metadata(&lite, "unifi");
+        assert_eq!(a.device_family, b.device_family);
+        assert_ne!(a.hardware_targets, b.hardware_targets);
+    }
+
+    #[test]
     fn ref_points_at_the_records_own_api_url() {
         let r = record("U7PG2");
         let fref = record_to_ref(&r, "unifi");
         assert_eq!(fref.vendor, "unifi");
-        assert_eq!(fref.device_family, "U7PG2");
+        assert_eq!(fref.device_family, "UAP");
         assert_eq!(fref.source_url, r.links.self_link.href);
     }
 

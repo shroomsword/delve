@@ -171,8 +171,9 @@ fn render(event: &FirmwareEvent) -> (String, String) {
             first_seen,
         } => {
             let subject = format!(
-                "[delve] New firmware: {} {} {}",
-                firmware.vendor, firmware.device_family, firmware.version.raw
+                "[delve] New firmware: {} {}",
+                device_label(firmware),
+                firmware.version.raw
             );
             let mut body = describe(firmware);
             body.push_str(&format!("First seen:    {first_seen}\n"));
@@ -187,8 +188,9 @@ fn render(event: &FirmwareEvent) -> (String, String) {
             let same_version = previous.version.raw == firmware.version.raw;
             let subject = if same_version {
                 format!(
-                    "[delve] Firmware rebuilt under the same version: {} {} {}",
-                    firmware.vendor, firmware.device_family, firmware.version.raw
+                    "[delve] Firmware rebuilt under the same version: {} {}",
+                    device_label(firmware),
+                    firmware.version.raw
                 )
             } else {
                 let what = match version_direction {
@@ -197,9 +199,8 @@ fn render(event: &FirmwareEvent) -> (String, String) {
                     VersionDirection::Unordered => "Firmware changed",
                 };
                 format!(
-                    "[delve] {what}: {} {} {} -> {}",
-                    firmware.vendor,
-                    firmware.device_family,
+                    "[delve] {what}: {} {} -> {}",
+                    device_label(firmware),
                     previous.version.raw,
                     firmware.version.raw
                 )
@@ -226,6 +227,23 @@ fn render(event: &FirmwareEvent) -> (String, String) {
             }
             (single_line(&subject), body)
         }
+    }
+}
+
+/// Names the device in a subject: the vendor, the device family, and the
+/// hardware in parentheses, such as `unifi USW (USMINI)`. A family can span
+/// many models (UniFi's `USW` is every switch), so the hardware is what says
+/// which one changed. It is left out when it would only repeat the family,
+/// as for a UniFi model that has no product line.
+fn device_label(firmware: &FirmwareMetadata) -> String {
+    let hardware = firmware.hardware_targets.join("+");
+    if hardware.is_empty() || hardware == firmware.device_family {
+        format!("{} {}", firmware.vendor, firmware.device_family)
+    } else {
+        format!(
+            "{} {} ({hardware})",
+            firmware.vendor, firmware.device_family
+        )
     }
 }
 
@@ -315,7 +333,10 @@ mod tests {
     #[test]
     fn a_new_release_names_the_firmware_in_the_subject_and_body() {
         let (subject, body) = render(&new_release("1.0"));
-        assert_eq!(subject, "[delve] New firmware: acme widget 1.0");
+        assert_eq!(
+            subject,
+            "[delve] New firmware: acme widget (rev-a+rev-b) 1.0"
+        );
         assert!(body.contains("Vendor:        acme\n"), "{body}");
         assert!(body.contains("Hardware:      rev-a, rev-b\n"), "{body}");
         assert!(body.contains("Released:      2026-09-01\n"), "{body}");
@@ -340,7 +361,10 @@ mod tests {
     #[test]
     fn an_update_says_which_way_the_version_moved() {
         let (subject, body) = render(&updated("1.0", "1.1", VersionDirection::Newer));
-        assert_eq!(subject, "[delve] Firmware updated: acme widget 1.0 -> 1.1");
+        assert_eq!(
+            subject,
+            "[delve] Firmware updated: acme widget (rev-a+rev-b) 1.0 -> 1.1"
+        );
         assert!(
             body.contains("Previous:      1.0 (this is newer)\n"),
             "{body}"
@@ -350,12 +374,43 @@ mod tests {
         let (subject, _) = render(&updated("1.1", "1.0", VersionDirection::Older));
         assert_eq!(
             subject,
-            "[delve] Firmware DOWNGRADED: acme widget 1.1 -> 1.0"
+            "[delve] Firmware DOWNGRADED: acme widget (rev-a+rev-b) 1.1 -> 1.0"
         );
 
         let (subject, body) = render(&updated("r1", "r2", VersionDirection::Unordered));
-        assert_eq!(subject, "[delve] Firmware changed: acme widget r1 -> r2");
+        assert_eq!(
+            subject,
+            "[delve] Firmware changed: acme widget (rev-a+rev-b) r1 -> r2"
+        );
         assert!(body.contains("(order unknown)"), "{body}");
+    }
+
+    #[test]
+    fn the_subject_names_the_hardware_when_the_family_covers_many_models() {
+        let mut event = new_release("1.0");
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut event {
+            firmware.device_family = "USW".into();
+            firmware.hardware_targets = vec!["USMINI".into()];
+        }
+        assert_eq!(
+            render(&event).0,
+            "[delve] New firmware: acme USW (USMINI) 1.0"
+        );
+    }
+
+    #[test]
+    fn the_subject_does_not_repeat_the_hardware_when_it_is_the_family() {
+        let mut event = new_release("1.0");
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut event {
+            firmware.device_family = "USPRPS".into(); // a model with no product line
+            firmware.hardware_targets = vec!["USPRPS".into()];
+        }
+        assert_eq!(render(&event).0, "[delve] New firmware: acme USPRPS 1.0");
+
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut event {
+            firmware.hardware_targets = vec![];
+        }
+        assert_eq!(render(&event).0, "[delve] New firmware: acme USPRPS 1.0");
     }
 
     #[test]
@@ -363,7 +418,7 @@ mod tests {
         let (subject, _) = render(&updated("1.0", "1.0", VersionDirection::Unordered));
         assert_eq!(
             subject,
-            "[delve] Firmware rebuilt under the same version: acme widget 1.0"
+            "[delve] Firmware rebuilt under the same version: acme widget (rev-a+rev-b) 1.0"
         );
     }
 
@@ -376,7 +431,7 @@ mod tests {
         );
         assert_eq!(
             subject,
-            "[delve] New firmware: acme widget 1.0  Bcc: attacker@example.test"
+            "[delve] New firmware: acme widget (rev-a+rev-b) 1.0  Bcc: attacker@example.test"
         );
     }
 
@@ -453,7 +508,7 @@ mod tests {
         let to: Vec<String> = envelope.to().iter().map(|a| a.to_string()).collect();
         assert_eq!(to, ["ops@example.test", "sec@example.test"]);
         assert!(
-            raw.contains("Subject: [delve] New firmware: acme widget 1.0"),
+            raw.contains("Subject: [delve] New firmware: acme widget (rev-a+rev-b) 1.0"),
             "{raw}"
         );
         assert!(raw.contains("Content-Type: text/plain"), "{raw}");
@@ -544,7 +599,7 @@ mod tests {
         assert!(log.contains("RCPT TO:<ops@example.test>"), "{log}");
         assert!(log.contains("RCPT TO:<sec@example.test>"), "{log}");
         assert!(
-            log.contains("Subject: [delve] Firmware updated: acme widget 1.0 -> 1.1"),
+            log.contains("Subject: [delve] Firmware updated: acme widget (rev-a+rev-b) 1.0 -> 1.1"),
             "{log}"
         );
         assert!(log.contains("Previous:      1.0 (this is newer)"), "{log}");

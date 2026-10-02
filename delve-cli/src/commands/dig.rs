@@ -348,11 +348,11 @@ mod tests {
             "{log}"
         );
         assert!(
-            log.contains("Subject: [delve] Firmware updated: acme widget 1.0 -> 1.1"),
+            log.contains("Subject: [delve] Firmware updated: acme widget (rev-a) 1.0 -> 1.1"),
             "{log}"
         );
         assert!(
-            log.contains("Subject: [delve] New firmware: acme gadget 0.1"),
+            log.contains("Subject: [delve] New firmware: acme gadget (rev-a) 0.1"),
             "{log}"
         );
     }
