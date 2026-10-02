@@ -34,7 +34,7 @@ use delve_core::plugin::PluginError;
 use serde::Deserialize;
 use url::Url;
 
-use crate::product_line::device_family;
+use crate::product_line::{device_family, product_name};
 use crate::version::parse_unifi_version;
 
 pub const API_BASE: &str = "https://fw-update.ui.com/api/firmware";
@@ -261,6 +261,7 @@ pub fn record_to_metadata(record: &FirmwareRecord, vendor: &str) -> FirmwareMeta
         signature: None,
         hardware_targets: vec![record.platform.clone()],
         release_notes_url: record.links.changelog.as_ref().map(|l| l.href.clone()),
+        display_name: product_name(&record.platform).map(String::from),
     }
 }
 
@@ -404,6 +405,24 @@ mod tests {
         );
         let meta = record_to_metadata(&r, "unifi");
         assert_eq!(meta.release_date, NaiveDate::from_ymd_opt(2026, 6, 7));
+    }
+
+    #[test]
+    fn the_product_name_is_the_display_name() {
+        let meta = record_to_metadata(&record("USMINI"), "unifi");
+        assert_eq!(meta.display_name.as_deref(), Some("Switch Flex Mini"));
+
+        // A model with no line still has a name, and keeps its code as family.
+        let mut power = record("USMINI");
+        power.platform = "USPRPS".to_string();
+        let meta = record_to_metadata(&power, "unifi");
+        assert_eq!(meta.device_family, "USPRPS");
+        assert_eq!(meta.display_name.as_deref(), Some("Power Backup"));
+
+        // A model nobody has named gets none, so nothing is invented.
+        let mut unknown = record("USMINI");
+        unknown.platform = "NEWMODEL".to_string();
+        assert_eq!(record_to_metadata(&unknown, "unifi").display_name, None);
     }
 
     #[test]

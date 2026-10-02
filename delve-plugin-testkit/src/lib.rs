@@ -145,6 +145,7 @@ mod tests {
                 signature: None,
                 hardware_targets: self.hardware.clone(),
                 release_notes_url: None,
+                display_name: None,
             })
         }
 

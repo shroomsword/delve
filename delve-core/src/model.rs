@@ -49,6 +49,13 @@ pub struct FirmwareMetadata {
     /// key too (see the README's "Data model and identity keys" section).
     pub hardware_targets: Vec<String>,
     pub release_notes_url: Option<Url>,
+    /// A human-readable product name, such as "Switch Flex Mini", for
+    /// notifications and `catalog`. Not part of the identity key and not
+    /// compared when deciding what changed. Plugins that have no such name
+    /// leave it `None`; entries stored before this field existed read as
+    /// `None` until their next dig.
+    #[serde(default)]
+    pub display_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,5 +244,30 @@ mod tests {
             VersionDirection::between(&a, &b),
             VersionDirection::Unordered
         );
+    }
+
+    /// Every database written before `display_name` existed stores
+    /// metadata without it; those rows must keep loading.
+    #[test]
+    fn metadata_stored_before_display_name_existed_still_loads() {
+        let old = r#"{
+            "vendor": "unifi",
+            "device_family": "USW",
+            "source_url": "https://example.test/fw",
+            "version": {"raw": "1.0", "scheme": "Semver", "ordinal": [1, 0]},
+            "release_date": null,
+            "sha256": null,
+            "signature": null,
+            "hardware_targets": ["USMINI"],
+            "release_notes_url": null
+        }"#;
+        let meta: FirmwareMetadata = serde_json::from_str(old).unwrap();
+        assert_eq!(meta.display_name, None);
+
+        let mut named = meta.clone();
+        named.display_name = Some("Switch Flex Mini".into());
+        let again: FirmwareMetadata =
+            serde_json::from_str(&serde_json::to_string(&named).unwrap()).unwrap();
+        assert_eq!(again.display_name.as_deref(), Some("Switch Flex Mini"));
     }
 }

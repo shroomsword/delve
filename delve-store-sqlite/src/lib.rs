@@ -542,6 +542,7 @@ mod tests {
             signature: None,
             hardware_targets: hw.iter().map(|s| s.to_string()).collect(),
             release_notes_url: None,
+            display_name: None,
         }
     }
 

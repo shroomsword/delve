@@ -235,6 +235,11 @@ fn render(event: &FirmwareEvent) -> (String, String) {
 /// many models (UniFi's `USW` is every switch), so the hardware is what says
 /// which one changed. It is left out when it would only repeat the family,
 /// as for a UniFi model that has no product line.
+///
+/// The display name is deliberately not here. Putting it in made a UniFi
+/// subject a median 93 characters (up to 109) against 74 (at most 78), and the
+/// version, the part that matters most, moved past column 60 in most of them,
+/// where an inbox preview cuts it off. It goes in the body instead.
 fn device_label(firmware: &FirmwareMetadata) -> String {
     let hardware = firmware.hardware_targets.join("+");
     if hardware.is_empty() || hardware == firmware.device_family {
@@ -251,6 +256,9 @@ fn device_label(firmware: &FirmwareMetadata) -> String {
 fn describe(firmware: &FirmwareMetadata) -> String {
     let mut out = String::new();
     out.push_str(&format!("Vendor:        {}\n", firmware.vendor));
+    if let Some(name) = &firmware.display_name {
+        out.push_str(&format!("Product:       {name}\n"));
+    }
     out.push_str(&format!("Device family: {}\n", firmware.device_family));
     out.push_str(&format!(
         "Hardware:      {}\n",
@@ -301,6 +309,7 @@ mod tests {
             signature: None,
             hardware_targets: vec!["rev-a".into(), "rev-b".into()],
             release_notes_url: Some("https://acme.example.test/notes".parse().unwrap()),
+            display_name: None,
         }
     }
 
@@ -396,6 +405,27 @@ mod tests {
             render(&event).0,
             "[delve] New firmware: acme USW (USMINI) 1.0"
         );
+    }
+
+    #[test]
+    fn the_display_name_is_in_the_body_but_not_the_subject() {
+        let mut event = new_release("1.0");
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut event {
+            firmware.device_family = "USW".into();
+            firmware.hardware_targets = vec!["USMINI".into()];
+            firmware.display_name = Some("Switch Flex Mini".into());
+        }
+        let (subject, body) = render(&event);
+        // The name in the subject would push the version past column 60 for
+        // most UniFi models, so only the codes are there.
+        assert_eq!(subject, "[delve] New firmware: acme USW (USMINI) 1.0");
+        assert!(body.contains("Product:       Switch Flex Mini\n"), "{body}");
+    }
+
+    #[test]
+    fn there_is_no_product_line_without_a_display_name() {
+        let (_, body) = render(&new_release("1.0"));
+        assert!(!body.contains("Product:"), "{body}");
     }
 
     #[test]

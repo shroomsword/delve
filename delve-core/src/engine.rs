@@ -483,6 +483,7 @@ mod tests {
             signature: None,
             hardware_targets: vec!["isr4331".into()],
             release_notes_url: None,
+            display_name: None,
         }
     }
 

@@ -696,9 +696,10 @@ password = "env:DELVE_SMTP_PASSWORD"    # "env:VAR_NAME" reads the environment, 
   DOWNGRADED: ...` when `version_direction` is `Older`. The hardware goes in
   parentheses because a family can cover many models (UniFi's `USW` is every
   switch); it is left out when it would only repeat the family. A
-  rebuild under the same version says so. The body lists the vendor, device
-  family, hardware, version, release date, SHA-256, source and release-notes
-  URLs, and for updates the changed fields. The subject is one line, with
+  rebuild under the same version says so. The body lists the vendor, the
+  product name when the plugin has one, device family, hardware, version,
+  release date, SHA-256, source and release-notes URLs, and for updates the
+  changed fields. The subject is one line, with
   control characters from vendor data replaced by spaces.
 - A bad address, a half-set login, or an unset `env:` variable fails the
   `dig` at startup instead of running without the notifications you asked
@@ -960,6 +961,7 @@ but each has its own version quirks and should be checked the same way
 |---|---|
 | `device_family` | the model's product line, e.g. `UAP` for `U7PG2` (UAP-AC-Pro) and `USW` for `USMINI` (USW-Flex-Mini), or the model code itself when it has no line — see [Product lines](#product-lines) |
 | `hardware_targets` | `[platform]` — always the model code, e.g. `U7PG2` |
+| `display_name` | the model's product name, e.g. "Switch Flex Mini" — see [Product lines](#product-lines); `None` for the two codes nobody has named |
 | `version` | `version` (e.g. `v6.6.77+15402`); ordinal from `version_major`/`minor`/`patch`/`build` — see `version.rs` |
 | `release_date` | `release_date` when present (rare), otherwise `created` (upload time) |
 | `sha256` | `sha256_checksum` — verified to match the downloaded file |
@@ -1011,6 +1013,21 @@ routers, a cable modem, `U7UKU` (a "Swiss Army Knife" that fits none of
 the lines above), and two codes Ubiquiti's list doesn't know (`USMULT` and
 `UXGPROV2`). A wrong guess would silently put a device in the wrong line,
 while leaving it out loses nothing.
+
+**Product names.** Each model also carries a product name (`USMINI` is
+"Switch Flex Mini", `U7PG2` is "Access Point AC Pro"), taken from the same
+Ubiquiti device list, for 195 of the 197 codes. It is display text only: it
+is not part of the identity key and is not compared when deciding what
+changed. It shows in `catalog --long`, in the log line (`name=`), and as a
+`Product:` line in the email body.
+
+It is deliberately **left out of the email subject and the default `catalog`
+table**. Tried there, it made UniFi subjects a median 93 characters long (up
+to 109) against 74 (at most 78) without it, so 177 of 187 models would be
+folded or cut off in an inbox list, and the version moved past column 60 for
+129 of them, which is where a preview cuts it off. In `catalog`, a NAME column
+widened the table from 134 to 171 characters. The model code stays everywhere
+it was.
 
 **Keeping it current.** The ignored live test
 `product_line::tests::live_every_model_code_is_mapped_or_known_unmapped`
@@ -1282,7 +1299,8 @@ exists because of it, not as a design decision made up front.
   lines: known models in their line, codes whose prefix misleads (`USWDA23`,
   `UDMA69B`, `UDMB`), a model with no line keeping its code, two models in
   one line staying distinct by hardware, and the table being sorted, free of
-  duplicates and limited to the documented lines. The ignored live test
+  duplicates and limited to the documented lines, and product names (known,
+  unmapped models still named, an unknown model getting none). The ignored live test
   checks every model code Ubiquiti lists against the table.
   `discover` runs against a local mock of the list API: one request by
   default, one request per distinct model with `models` set, dropping

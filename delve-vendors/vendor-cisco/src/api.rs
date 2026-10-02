@@ -204,6 +204,7 @@ fn suggestion_to_metadata(
         signature: None,
         hardware_targets: vec![hardware_target.to_string()],
         release_notes_url,
+        display_name: None,
     })
 }
 
