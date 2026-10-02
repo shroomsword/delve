@@ -32,6 +32,8 @@ pub struct Release {
     pub ordinal: Option<Vec<u64>>,
     pub hardware: &'static [&'static str],
     pub sha: u8,
+    /// The product name the plugin reports, if any.
+    pub display_name: Option<&'static str>,
 }
 
 pub fn release(family: &'static str, version: &'static str, ordinal: &[u64], sha: u8) -> Release {
@@ -41,6 +43,7 @@ pub fn release(family: &'static str, version: &'static str, ordinal: &[u64], sha
         ordinal: Some(ordinal.to_vec()),
         hardware: &["rev-a"],
         sha,
+        display_name: None,
     }
 }
 
@@ -73,6 +76,7 @@ impl Release {
             signature: None,
             hardware_targets: self.hardware.iter().map(|h| h.to_string()).collect(),
             release_notes_url: None,
+            display_name: self.display_name.map(String::from),
         }
     }
 }

@@ -24,6 +24,9 @@ pub async fn run(
             let e = &s.metadata;
             writeln!(out, "id:             {}", s.id)?;
             writeln!(out, "vendor:         {}", e.vendor)?;
+            if let Some(name) = &e.display_name {
+                writeln!(out, "name:           {name}")?;
+            }
             writeln!(out, "device_family:  {}", e.device_family)?;
             writeln!(out, "source_url:     {}", e.source_url)?;
             writeln!(out, "version:        {}", e.version.raw)?;
@@ -55,7 +58,9 @@ pub async fn run(
             writeln!(out, "---")?;
         }
     } else {
-        // Default view: the most useful fields only, one line per entry.
+        // Default view: the most useful fields only, one line per entry. The
+        // display name is left to `--long`: a NAME column took the table from
+        // 134 to 171 characters wide.
         writeln!(
             out,
             "{:<36} {:<12} {:<14} {:<24} {:<16} {:<12} SHA256 (short)",
@@ -208,6 +213,35 @@ mod tests {
         assert_eq!(rows(&out).len(), 1, "{out}");
         // "1.10" sorts before "1.2" as a string; it must win numerically.
         assert!(rows(&out)[0].contains(" 1.10 "), "{out}");
+    }
+
+    #[tokio::test]
+    async fn the_display_name_shows_in_the_long_view_only() {
+        let store = memory_store().await;
+        let mut named = release("sprocket", "1.0", &[1, 0], 5);
+        named.display_name = Some("Sprocket Pro");
+        seed(&store, MockPlugin::new("globex", vec![named])).await;
+        let mut s = selector();
+        s.vendor = Some("globex".into());
+
+        let long = catalog(&store, s, true).await.unwrap();
+        assert!(long.contains("name:           Sprocket Pro\n"), "{long}");
+
+        // A NAME column made the default table 37 characters wider.
+        let mut s = selector();
+        s.vendor = Some("globex".into());
+        let table = catalog(&store, s, false).await.unwrap();
+        assert!(!table.contains("NAME"), "{table}");
+        assert!(!table.contains("Sprocket Pro"), "{table}");
+    }
+
+    #[tokio::test]
+    async fn an_entry_with_no_display_name_has_no_name_line() {
+        let store = seeded_store().await;
+        let mut s = selector();
+        s.vendor = Some("globex".into());
+        let out = catalog(&store, s, true).await.unwrap();
+        assert!(!out.contains("name:"), "{out}");
     }
 
     #[tokio::test]

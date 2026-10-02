@@ -23,6 +23,7 @@ impl Subscriber for LogSubscriber {
             } => {
                 tracing::info!(
                     vendor = %firmware.vendor,
+                    name = firmware.display_name.as_deref(),
                     device_family = %firmware.device_family,
                     hardware = %firmware.hardware_targets.join("+"),
                     version = %firmware.version.raw,
@@ -38,6 +39,7 @@ impl Subscriber for LogSubscriber {
             } => {
                 tracing::info!(
                     vendor = %firmware.vendor,
+                    name = firmware.display_name.as_deref(),
                     device_family = %firmware.device_family,
                     hardware = %firmware.hardware_targets.join("+"),
                     version = %firmware.version.raw,
@@ -88,6 +90,7 @@ mod tests {
             signature: None,
             hardware_targets: vec!["USMINI".into()],
             release_notes_url: None,
+            display_name: None,
         }
     }
 
@@ -124,6 +127,26 @@ mod tests {
         ] {
             assert!(line.contains(field), "missing {field}: {line}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_display_name_is_logged_when_there_is_one() {
+        let mut named = firmware("1.1");
+        named.display_name = Some("Switch Flex Mini".into());
+        let line = logged(FirmwareEvent::NewRelease {
+            firmware: named,
+            first_seen: Utc.with_ymd_and_hms(2026, 10, 1, 12, 0, 0).unwrap(),
+        })
+        .await;
+        assert!(line.contains("name=\"Switch Flex Mini\""), "{line}");
+
+        // With no name the field is left out, not logged empty.
+        let line = logged(FirmwareEvent::NewRelease {
+            firmware: firmware("1.1"),
+            first_seen: Utc.with_ymd_and_hms(2026, 10, 1, 12, 0, 0).unwrap(),
+        })
+        .await;
+        assert!(!line.contains("name="), "{line}");
     }
 
     #[tokio::test]
