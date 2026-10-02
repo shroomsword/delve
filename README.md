@@ -655,6 +655,12 @@ pub enum FirmwareEvent {
 - Fan-out is concurrent; one slow or broken subscriber never blocks
   another — failures are logged and swallowed at the bus level, since a
   webhook being down shouldn't fail the whole dig.
+- A subscriber that wants to hold events back and send them together
+  (`subscriber-email` does) implements `Subscriber::flush`. The engine calls
+  it once, on every subscriber, after the last event of each vendor's dig,
+  **whether the dig succeeded or failed**, including a baseline that
+  published nothing. The default does nothing, so a subscriber that acts on
+  each event as it arrives (the log and the webhook) needs no change.
 - `version_direction` on `UpdatedRelease` matters because a downgrade is a
   meaningfully different signal to a subscriber than an upgrade — it can
   mean a vendor pulled a bad release, or that you're scraping a beta
@@ -741,6 +747,8 @@ from = "Delve <delve@example.com>"      # a bare address or "Name <address>"
 to = ["ops@example.com", "sec@example.com"]
 username = "delve"                      # username and password go together, or neither
 password = "env:DELVE_SMTP_PASSWORD"    # "env:VAR_NAME" reads the environment, like vendor credentials
+batch = true                            # one message per dig (the default); false sends one per event
+max_events_per_email = 50               # with batch, the most events in one message (default 50, at least 1)
 ```
 
 - `host`, `from` and `to` are required. Unknown fields are rejected, so a
@@ -764,12 +772,30 @@ password = "env:DELVE_SMTP_PASSWORD"    # "env:VAR_NAME" reads the environment, 
   `dig` at startup instead of running without the notifications you asked
   for. A server that is down fails only that message: the failure is logged
   and the dig carries on, like any other subscriber.
-- **One email per event, no batching.** A dig that finds many releases at
-  once sends many emails. A vendor's first dig is a silent baseline, so this
-  mostly happens after adding models to a vendor without running
-  `dig --vendor <id> --redig` once (see [Tracking only some
-  models](#tracking-only-some-models)), or when a vendor publishes many
-  releases at once.
+- **One message per dig, not per event.** The events of a dig are held back
+  and sent when it is over. A burst, such as adding a model to a vendor
+  without running `dig --vendor <id> --redig` once (see [Tracking only some
+  models](#tracking-only-some-models)), or a vendor publishing many releases
+  at once, is then one email and not dozens: adding a UniFi model produced 26
+  events, which is one message. (Amazon SES's sandbox allows 1 message a
+  second and 200 a day, so 26 separate emails would have been a problem.)
+  - **No events** send nothing, and **one event** gets the ordinary message,
+    so a quiet dig looks exactly as it did before.
+  - **Two or more** get a digest. The subject counts the changes and names
+    the device, such as `[delve] 26 firmware changes: unifi USPRPS`, or
+    `[delve] 31 firmware changes: unifi (3 devices)` when there are several.
+    The body groups them by device, newest version first, and for each says
+    whether it is `new`, `updated`, `DOWNGRADED`, `changed` or `rebuilt`, with
+    the versions, the release date, a short hash (and the old one for a
+    change), and the release-notes and source links.
+  - **A big burst is split**: no message holds more than `max_events_per_email`
+    events (50 unless you set it), and the rest go in further messages
+    numbered `(part 1 of 3)`. Every message is tried even if an earlier one
+    fails, and the failure is reported.
+  - `batch = false` sends each event as its own message as it arrives.
+  - **The events are only in memory until the dig ends**, so a process that is
+    killed before then loses them. The engine sends what it has however a dig
+    ends, including when a vendor's dig fails part-way.
 - Without the Cargo feature, a `[subscribers.email]` section still parses
   but `dig` only logs a warning that it isn't compiled in.
 
@@ -1342,6 +1368,19 @@ exists because of it, not as a design decision made up front.
   local server arriving as `application/json` with the same body, an error
   status being a delivery error, and an endpoint that never answers timing
   out instead of holding up the dig.
+- **`delve-core` flush**: subscribers are flushed once after the last event
+  of a dig, after a dig that fails part-way, and after a baseline that
+  published nothing; the bus reaches every subscriber even when one's flush
+  fails; and the default `flush` does nothing.
+- **`delve-subscribers/subscriber-email`** batching: nothing is sent until
+  the flush, 26 events are one digest that counts them with the newest version
+  first, one event gets the ordinary message and none gets nothing, a burst
+  past the cap is split into numbered messages that together hold every
+  event once, the cap is at least 1, `batch = false` sends as before,
+  a failed message doesn't stop the others and is reported, and the digest's
+  entries, grouping and one-line subject. `delve-cli`: a real dig with two
+  events sends one digest, `batch = false` sends two messages, and
+  `max_events_per_email = 1` sends two numbered ones.
 - **`delve-subscribers/subscriber-email`**: the subject and body for each
   event kind (new, updated newer/older/unordered, same-version rebuild), a
   newline in vendor data not being able to add header lines, address and

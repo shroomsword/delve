@@ -75,6 +75,20 @@ pub async fn dig_vendor(
     store: &dyn MetadataStore,
     bus: &EventBus,
 ) -> Result<(), EngineError> {
+    let result = dig_vendor_run(vendor, ctx, store, bus).await;
+    // However the dig ended, subscribers holding events back (the email
+    // subscriber batches them) get to send what they have. Done out here
+    // because the body below returns early through `?` in several places.
+    bus.flush().await;
+    result
+}
+
+async fn dig_vendor_run(
+    vendor: &dyn VendorPlugin,
+    ctx: &ScrapeContext,
+    store: &dyn MetadataStore,
+    bus: &EventBus,
+) -> Result<(), EngineError> {
     let vendor_id = vendor.vendor_id();
     let run_kind = determine_run_kind(store, vendor_id).await?;
     let run_id: Uuid = store.start_run(vendor_id, run_kind).await?;
@@ -858,6 +872,104 @@ mod tests {
         // What was successfully fetched before the failure is still kept —
         // upsert isn't rolled back, only the baseline flag is withheld.
         assert_eq!(store.all_current("mockvendor").await.unwrap().len(), 1);
+    }
+
+    /// Records the order of `notify` and `flush` calls.
+    struct OrderRecorder(Arc<Mutex<Vec<&'static str>>>);
+
+    #[async_trait]
+    impl Subscriber for OrderRecorder {
+        fn id(&self) -> &'static str {
+            "test-order"
+        }
+
+        async fn notify(&self, _event: &FirmwareEvent) -> Result<(), SubscriberError> {
+            self.0.lock().unwrap().push("notify");
+            Ok(())
+        }
+
+        async fn flush(&self) -> Result<(), SubscriberError> {
+            self.0.lock().unwrap().push("flush");
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn subscribers_are_flushed_once_after_the_last_event_of_a_dig() {
+        let store = MockStore::default();
+        store.mark_baseline_complete("mockvendor").await.unwrap(); // so events are published
+        let plugin = MockPlugin {
+            refs: vec![
+                firmware_ref("https://example.test/a"),
+                firmware_ref("https://example.test/b"),
+            ],
+            metadata_by_url: HashMap::from([
+                (
+                    "https://example.test/a".to_string(),
+                    Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
+                ),
+                (
+                    "https://example.test/b".to_string(),
+                    Ok(metadata("2.0.0", vec![2, 0, 0], 2)),
+                ),
+            ]),
+        };
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let bus = EventBus::new(vec![Box::new(OrderRecorder(order.clone()))]);
+
+        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+
+        // Two releases, then exactly one flush, after both.
+        assert_eq!(*order.lock().unwrap(), ["notify", "notify", "flush"]);
+    }
+
+    #[tokio::test]
+    async fn subscribers_are_flushed_even_when_the_dig_fails_partway() {
+        // The first release is published, then the second fails to load: what
+        // a batching subscriber holds must still be sent.
+        let store = MockStore::default();
+        store.mark_baseline_complete("mockvendor").await.unwrap();
+        let plugin = MockPlugin {
+            refs: vec![
+                firmware_ref("https://example.test/a"),
+                firmware_ref("https://example.test/b"),
+            ],
+            metadata_by_url: HashMap::from([
+                (
+                    "https://example.test/a".to_string(),
+                    Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
+                ),
+                (
+                    "https://example.test/b".to_string(),
+                    Err("simulated vendor site failure".to_string()),
+                ),
+            ]),
+        };
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let bus = EventBus::new(vec![Box::new(OrderRecorder(order.clone()))]);
+
+        let result = dig_vendor(&plugin, &ctx(), &store, &bus).await;
+
+        assert!(result.is_err());
+        assert_eq!(*order.lock().unwrap(), ["notify", "flush"]);
+    }
+
+    #[tokio::test]
+    async fn a_baseline_dig_publishes_nothing_but_still_flushes() {
+        let store = MockStore::default();
+        let plugin = MockPlugin {
+            refs: vec![firmware_ref("https://example.test/a")],
+            metadata_by_url: HashMap::from([(
+                "https://example.test/a".to_string(),
+                Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
+            )]),
+        };
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let bus = EventBus::new(vec![Box::new(OrderRecorder(order.clone()))]);
+
+        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+
+        assert_eq!(*order.lock().unwrap(), ["flush"]);
     }
 
     #[tokio::test]
