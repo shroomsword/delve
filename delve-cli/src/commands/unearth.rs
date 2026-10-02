@@ -56,6 +56,40 @@ impl FileSink {
     }
 }
 
+/// Where to write the download. A path that is an existing directory, or
+/// that ends in a path separator, names a directory: it is created if needed
+/// and the file inside it is named after the entry, since the plugin's
+/// `fetch` doesn't report the vendor's own file name. Any other path is the
+/// file itself.
+fn output_path(out: &std::path::Path, entry: &delve_core::model::FirmwareMetadata) -> PathBuf {
+    let text = out.as_os_str().to_string_lossy();
+    let names_a_directory = out.is_dir()
+        || text
+            .chars()
+            .next_back()
+            .is_some_and(std::path::is_separator);
+    if !names_a_directory {
+        return out.to_path_buf();
+    }
+    let raw = format!(
+        "{}-{}-{}.bin",
+        entry.vendor,
+        entry.hardware_targets.join("+"),
+        entry.version.raw
+    );
+    let name: String = raw
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    out.join(name)
+}
+
 pub async fn run(
     registry: &PluginRegistry,
     store: &dyn MetadataStore,
@@ -108,6 +142,10 @@ pub async fn run(
         discovered_at: chrono::Utc::now(),
     };
 
+    let out = output_path(&out, &entry);
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut sink = FileSink::create(&out)?;
 
     plugin.fetch(&ctx, &source_ref, &mut sink).await?;
@@ -161,6 +199,60 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn entry(
+        vendor: &str,
+        hardware: &[&str],
+        version: &str,
+    ) -> delve_core::model::FirmwareMetadata {
+        delve_core::model::FirmwareMetadata {
+            vendor: vendor.to_string(),
+            device_family: "USW".to_string(),
+            source_url: "https://example.com/firmware/1".parse().unwrap(),
+            version: delve_core::model::VersionKey::opaque(version.to_string()),
+            release_date: None,
+            sha256: None,
+            signature: None,
+            hardware_targets: hardware.iter().map(|h| h.to_string()).collect(),
+            release_notes_url: None,
+            display_name: None,
+        }
+    }
+
+    #[test]
+    fn a_file_path_is_used_as_it_is() {
+        let e = entry("unifi", &["USMINI"], "v1.6.3+574");
+        let path = std::path::Path::new("some/dir/mini.bin");
+        assert_eq!(output_path(path, &e), path);
+    }
+
+    #[test]
+    fn an_existing_directory_gets_a_file_named_after_the_entry() {
+        let dir = std::env::temp_dir().join(format!("delve-test-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let e = entry("unifi", &["USMINI"], "v1.6.3+574");
+        // `+` is not safe in every file system's names, so it is replaced.
+        assert_eq!(
+            output_path(&dir, &e),
+            dir.join("unifi-USMINI-v1.6.3_574.bin")
+        );
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn a_path_ending_in_a_separator_names_a_directory_even_if_it_does_not_exist() {
+        let e = entry("cisco", &["isr4000"], "17.9.4a");
+        let out = output_path(std::path::Path::new("./downloads/"), &e);
+        assert_eq!(out.file_name().unwrap(), "cisco-isr4000-17.9.4a.bin");
+        assert_eq!(out.parent().unwrap(), std::path::Path::new("./downloads"));
+    }
+
+    #[test]
+    fn several_hardware_targets_and_odd_characters_make_a_safe_name() {
+        let e = entry("v/x", &["A", "B"], "1 2/3");
+        let out = output_path(std::path::Path::new("d/"), &e);
+        assert_eq!(out.file_name().unwrap(), "v_x-A_B-1_2_3.bin");
     }
 
     #[test]
