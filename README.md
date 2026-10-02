@@ -649,7 +649,8 @@ pub enum FirmwareEvent {
 
 - Built-in subscribers are feature-gated crates under `delve-subscribers/`:
   `subscriber-log` (always on — an audit trail independent of whether
-  webhook/email delivery succeeds), `subscriber-webhook` (POSTs a JSON
+  webhook/email delivery succeeds; each line names the vendor, device
+  family, hardware and version), `subscriber-webhook` (POSTs a JSON
   payload) and `subscriber-email` (see [Email](#email)).
 - Fan-out is concurrent; one slow or broken subscriber never blocks
   another — failures are logged and swallowed at the bus level, since a
@@ -689,9 +690,12 @@ password = "env:DELVE_SMTP_PASSWORD"    # "env:VAR_NAME" reads the environment, 
   won't, rather than falling back to plain text. `"implicit"` is TLS from
   the first byte (port 465). `"none"` is for a local relay only: credentials
   and messages cross the network in the clear.
-- The subject names what happened, for example `[delve] New firmware: acme
-  widget 1.0`, `[delve] Firmware updated: acme widget 1.0 -> 1.1`, or
-  `[delve] Firmware DOWNGRADED: ...` when `version_direction` is `Older`. A
+- The subject names what happened and which device, for example `[delve]
+  New firmware: unifi USW (USMINI) v2.1.6+762`, `[delve] Firmware updated:
+  unifi USW (USMINI) v2.1.3+755 -> v2.1.6+762`, or `[delve] Firmware
+  DOWNGRADED: ...` when `version_direction` is `Older`. The hardware goes in
+  parentheses because a family can cover many models (UniFi's `USW` is every
+  switch); it is left out when it would only repeat the family. A
   rebuild under the same version says so. The body lists the vendor, device
   family, hardware, version, release date, SHA-256, source and release-notes
   URLs, and for updates the changed fields. The subject is one line, with
@@ -954,14 +958,96 @@ but each has its own version quirks and should be checked the same way
 
 | Field | API source |
 |---|---|
-| `device_family` | `platform` — the model code, e.g. `U7PG2` (UAP-AC-Pro), `USMINI` (USW-Flex-Mini) |
-| `hardware_targets` | `[platform]` |
+| `device_family` | the model's product line, e.g. `UAP` for `U7PG2` (UAP-AC-Pro) and `USW` for `USMINI` (USW-Flex-Mini), or the model code itself when it has no line — see [Product lines](#product-lines) |
+| `hardware_targets` | `[platform]` — always the model code, e.g. `U7PG2` |
 | `version` | `version` (e.g. `v6.6.77+15402`); ordinal from `version_major`/`minor`/`patch`/`build` — see `version.rs` |
 | `release_date` | `release_date` when present (rare), otherwise `created` (upload time) |
 | `sha256` | `sha256_checksum` — verified to match the downloaded file |
 | `release_notes_url` | `_links.changelog` — never present for `unifi-firmware` today |
 | `source_url` | the record's own API URL (`_links.self`) |
 | download (`fetch`) | `_links.data`, a direct file URL needing no login |
+
+### Product lines
+
+`device_family` is a product line, so `catalog --device-family USW` selects
+every switch in one go. The model code stays in `hardware_targets`, so two
+models in one line are still distinct entries.
+
+```
+delve catalog --vendor unifi --device-family USW            # every switch
+delve catalog --vendor unifi --device-family UAP --latest   # newest firmware for each older access point
+```
+
+| Line | Covers | Models |
+|---|---|---|
+| `USW` | switches | 85 |
+| `UAP` | access points before Wi-Fi 6: the AC generation, nanoHD, FlexHD, BeaconHD, XG and older | 26 |
+| `U6` | access points named "U6 ..." (Wi-Fi 6) | 15 |
+| `U7` | access points named "U7 ..." | 15 |
+| `E7` | access points named "E7 ..." | 7 |
+| `UXG` | gateways named "Gateway ..." (Lite, Max, Pro, Enterprise, Fiber) | 5 |
+| `USG` | Security Gateways | 3 |
+| `UCK` | Cloud Keys | 3 |
+| `UDM` | Dream Machine and Dream Machine Pro | 2 |
+| `UX` | Express | 2 |
+
+The counts are model codes in the release channel in October 2026.
+
+**Where the mapping comes from.** The firmware API has no product-line
+field, and the model codes don't say what a device is: `USWDA23` is a UPS,
+`UDMA69B` is the Express 7 and not a Dream Machine, and `UDMB` is an access
+point. So the table in `vendor-unifi/src/product_line.rs` is built from
+Ubiquiti's own published device list
+(`https://static.ui.com/fingerprint/ui/public.json`), looking each code up by
+name or hex system ID and using the device type and product name. The
+module's doc comment has the exact rules. As a cross-check, models that share
+one firmware image (the API's `models` field) must be in one line, and none
+of the nine such groups spans two.
+
+**Models without a line.** 34 of the 197 codes are deliberately left out and
+keep their model code as `device_family`, as before: power products (UPS,
+SmartPower, power distribution), bridges, LTE and U5G devices, travel
+routers, a cable modem, `U7UKU` (a "Swiss Army Knife" that fits none of
+the lines above), and two codes Ubiquiti's list doesn't know (`USMULT` and
+`UXGPROV2`). A wrong guess would silently put a device in the wrong line,
+while leaving it out loses nothing.
+
+**Keeping it current.** The ignored live test
+`product_line::tests::live_every_model_code_is_mapped_or_known_unmapped`
+fails with the list of any model code Ubiquiti has added that is in neither
+the table nor the known-unmapped list. Run it with
+`cargo test -p vendor-unifi -- --ignored`.
+
+#### Upgrading an existing database
+
+Moving a model into a line changes its stored identity key, so after
+upgrading:
+
+1. **Run `delve dig --vendor unifi --redig` once.** Without it, every model
+   that moved looks new, and the dig announces its whole history. In a test
+   with 2 mapped models that was 51 notifications. With `--redig` it was 0.
+   Models without a line are unaffected.
+2. **Optionally remove the old entries.** The old rows stay in the store,
+   so `catalog` shows each moved model twice, once under its model code and
+   once under its line (127 entries instead of 76 in the same test). The
+   history of observations is kept either way. To delete only the old
+   entries, after the `--redig` dig and with a backup of the database:
+
+   ```sql
+   DELETE FROM firmware_current
+   WHERE vendor = 'unifi'
+     AND device_family = hardware_key
+     AND EXISTS (
+       SELECT 1 FROM firmware_current AS n
+       WHERE n.vendor = 'unifi'
+         AND n.hardware_key = firmware_current.hardware_key
+         AND n.version_raw = firmware_current.version_raw
+         AND n.device_family <> firmware_current.device_family);
+   ```
+
+   It only removes an old-style row when a copy of the same model and
+   version exists under a line, so it can't remove the only copy. A fresh
+   database needs none of this.
 
 ### Requests per dig
 
@@ -1043,13 +1129,6 @@ the plugin's use changes.
 
 ### Notes to revisit
 
-- **Device family grouping.** `device_family` is currently the model code,
-  the same value as `hardware_targets`, because the API has no product-line
-  field. It should become a product line such as `USW`, `UXG`, `U7`, or
-  `U6`, so `catalog --device-family` can select a whole line. That needs a
-  hand-maintained mapping from model codes to lines, since the codes don't
-  encode it reliably. Changing it also changes every stored identity key,
-  so plan a `dig --vendor unifi --redig` alongside it.
 - **Beta firmware.** Only the `release` channel is tracked (`api::CHANNEL`).
   The API also has `beta-public`. Tracking it needs a way to configure
   channels, and a decision on identity: some versions appear in both
@@ -1177,6 +1256,9 @@ exists because of it, not as a design decision made up front.
   record, and too few requests to measure pacing — to prove each check
   fails when it should and passes a conforming plugin. Also the mock
   server answering from its handler and recording each request.
+- **`delve-subscribers/subscriber-log`**: a new-release line and an update
+  line each name the vendor, device family, hardware and version, checked by
+  capturing what the subscriber actually logs.
 - **`delve-subscribers/subscriber-email`**: the subject and body for each
   event kind (new, updated newer/older/unordered, same-version rebuild), a
   newline in vendor data not being able to add header lines, address and
@@ -1196,7 +1278,12 @@ exists because of it, not as a design decision made up front.
   `metadata()` being served from the discover cache without a request, and
   removing each record as it uses it.
   The plugin also passes all four testkit conformance checks against a
-  mock server, including with unparseable records in the list.
+  mock server, including with unparseable records in the list. Product
+  lines: known models in their line, codes whose prefix misleads (`USWDA23`,
+  `UDMA69B`, `UDMB`), a model with no line keeping its code, two models in
+  one line staying distinct by hardware, and the table being sorted, free of
+  duplicates and limited to the documented lines. The ignored live test
+  checks every model code Ubiquiti lists against the table.
   `discover` runs against a local mock of the list API: one request by
   default, one request per distinct model with `models` set, dropping
   other models if the server ignores the model filter, and failing on a

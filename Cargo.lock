@@ -2140,8 +2140,12 @@ name = "subscriber-log"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "delve-core",
+ "tokio",
  "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

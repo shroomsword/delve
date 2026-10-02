@@ -32,6 +32,7 @@
 //! limits (redistributing downloaded images).
 
 mod api;
+mod product_line;
 mod version;
 
 use std::collections::HashMap;
@@ -396,10 +397,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert!(!requests[0].contains("platform"), "{}", requests[0]);
         // Every fixture model except the placeholder `stat` record.
-        assert_eq!(
-            platforms(&refs),
-            ["U7PG2", "U7PG2", "UCKG2", "USMINI", "UX", "UXGPRO"]
-        );
+        assert_eq!(platforms(&refs), ["UAP", "UAP", "UCK", "USW", "UX", "UXG"]);
     }
 
     #[tokio::test]
@@ -412,7 +410,7 @@ mod tests {
         assert_eq!(seen.len(), 2, "one request per distinct model: {seen:?}");
         assert!(seen[0].contains("filter=eq%7E%7Eplatform%7E%7EU7PG2"));
         assert!(seen[1].contains("filter=eq%7E%7Eplatform%7E%7EUSMINI"));
-        assert_eq!(platforms(&refs), ["U7PG2", "U7PG2", "USMINI"]);
+        assert_eq!(platforms(&refs), ["UAP", "UAP", "USW"]);
 
         // metadata() is still answered from the cache that discover filled.
         let meta = plugin.metadata(&ctx, &refs[0]).await.unwrap();

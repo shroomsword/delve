@@ -8,3 +8,9 @@ license.workspace = true
 delve-core.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+chrono.workspace = true
+url.workspace = true
+tracing-subscriber.workspace = true
