@@ -190,6 +190,11 @@ pub trait VendorPlugin: Send + Sync {
 - `fetch` downloads (and the plugin may verify) the actual binary. This is
   **only ever called from the manual `unearth` command**, never from a
   scheduled dig — see [Baseline vs incremental digs](#baseline-vs-incremental-digs).
+  Before writing the first byte, a plugin may call
+  `sink.suggest_file_name(name)` when the vendor's download URL includes the
+  file's own name, so `unearth --out <directory>` can use it. A sink may
+  ignore the suggestion, and `unearth` rejects names that aren't plain file
+  names.
 
 Kept intentionally narrow: vendor-specific quirks (auth flows, pagination,
 container formats) stay inside each plugin crate, never leak into this
@@ -927,9 +932,12 @@ delve unearth --id <uuid> --out ./downloads/
 ```
 
 `--out` is a file path, or a directory (an existing one, or a path ending in
-`/`, created if needed). In a directory the file is named
+`/`, created if needed). In a directory the file is named by the plugin when
+the vendor's download URL contains the firmware's own file name (UniFi's do,
+such as `259f-U7PG2-6.8.2-<id>.bin`), and otherwise
 `<vendor>-<hardware>-<version>.bin`, with characters that aren't safe in file
-names (`+`, `/`, spaces) replaced by `_`, and the command prints the path.
+names (`+`, `/`, spaces) replaced by `_`. A name that is empty, `.`, `..` or
+contains a path separator is never used. The command prints the path it wrote.
 
 After download, the sha256 is verified against the stored hash by
 default and fails loudly on mismatch, since this is scraped data from

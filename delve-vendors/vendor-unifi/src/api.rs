@@ -226,6 +226,23 @@ pub fn select_records(records: Vec<FirmwareRecord>) -> Vec<FirmwareRecord> {
     selected
 }
 
+/// The file name in a download URL, such as
+/// `259f-U7PG2-6.8.2-5464c424-a775-4715-8bbc-d84602f55445.bin`, if the URL
+/// has one: the last path segment, when it has an extension and only letters,
+/// digits and `. _ - +`. Anything else (no segment, no extension, percent
+/// escapes, other characters) is not trusted to be a file name, and the
+/// caller names the file itself.
+pub fn download_file_name(url: &Url) -> Option<String> {
+    let name = url.path_segments()?.next_back()?;
+    let plain = name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '+'));
+    let has_extension = name
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty());
+    (plain && has_extension).then(|| name.to_string())
+}
+
 /// `device_family` is the model's product line (`USW`, `UAP`, `U7`, ...)
 /// when it has one, and its model code otherwise; `hardware_targets` is
 /// always the model code. See `product_line.rs`.
@@ -487,6 +504,62 @@ mod tests {
         let selected = select_records(vec![newer.clone(), older]);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, newer.id);
+    }
+
+    #[test]
+    fn a_download_url_with_a_file_name_gives_it() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        assert_eq!(
+            download_file_name(&url(
+                "https://fw-download.ubnt.com/data/unifi-firmware/259f-U7PG2-6.8.2-5464c424-a775-4715-8bbc-d84602f55445.bin"
+            ))
+            .as_deref(),
+            Some("259f-U7PG2-6.8.2-5464c424-a775-4715-8bbc-d84602f55445.bin")
+        );
+        // A console package.
+        assert_eq!(
+            download_file_name(&url(
+                "https://fw-download.ubnt.com/data/unifi-drive/uos-deb11-arm64-3.2.14-f4af.deb"
+            ))
+            .as_deref(),
+            Some("uos-deb11-arm64-3.2.14-f4af.deb")
+        );
+    }
+
+    #[test]
+    fn a_download_url_without_a_plain_file_name_gives_none() {
+        let url = |s: &str| Url::parse(s).unwrap();
+        // No extension: an id, not a file name.
+        assert_eq!(
+            download_file_name(&url("https://x.example/data/abc123")),
+            None
+        );
+        // A directory.
+        assert_eq!(download_file_name(&url("https://x.example/data/")), None);
+        assert_eq!(download_file_name(&url("https://x.example")), None);
+        // Only an extension, or a trailing dot.
+        assert_eq!(
+            download_file_name(&url("https://x.example/data/.bin")),
+            None
+        );
+        assert_eq!(
+            download_file_name(&url("https://x.example/data/abc.")),
+            None
+        );
+        // Escapes and other characters could hide a separator.
+        assert_eq!(
+            download_file_name(&url("https://x.example/data/a%2Fb.bin")),
+            None
+        );
+        assert_eq!(
+            download_file_name(&url("https://x.example/data/a%20b.bin")),
+            None
+        );
+        // A query string is not part of the name.
+        assert_eq!(
+            download_file_name(&url("https://x.example/data/fw.bin?token=1")).as_deref(),
+            Some("fw.bin")
+        );
     }
 
     #[test]
