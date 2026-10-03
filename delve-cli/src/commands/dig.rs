@@ -49,7 +49,7 @@ pub async fn run(
             );
         }
     }
-    let bus = EventBus::new(subscribers);
+    let bus = EventBus::new(subscribers).with_change_policy(config.notifications.change_policy()?);
 
     dig_vendors(
         config,

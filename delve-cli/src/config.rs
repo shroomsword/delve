@@ -15,6 +15,8 @@ pub struct Config {
     pub transport: TransportConfig,
     #[serde(default)]
     pub subscribers: SubscribersConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
     #[serde(default = "default_db_path")]
     /// Defaults under the XDG data directory (`$XDG_DATA_HOME`, typically
     /// `~/.local/share` on Linux — see `default_data_dir` below), not the
@@ -231,6 +233,33 @@ fn resolve_kind(kind: &TransportKind) -> anyhow::Result<Transport> {
     })
 }
 
+/// `[notifications]`: which changes to an already-stored version are
+/// reported. See the README's "Notifications" section.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// Field names to watch; unset means delve's default (`["sha256"]`).
+    pub changed_fields: Option<Vec<String>>,
+}
+
+impl NotificationsConfig {
+    /// The change policy for the event bus, failing on a field that can't
+    /// be watched rather than ignoring it.
+    pub fn change_policy(&self) -> anyhow::Result<delve_core::events::ChangePolicy> {
+        let Some(names) = &self.changed_fields else {
+            return Ok(delve_core::events::ChangePolicy::default());
+        };
+        let fields = names
+            .iter()
+            .map(|name| {
+                name.parse::<delve_core::events::WatchedField>()
+                    .map_err(|e| anyhow::anyhow!("[notifications] changed_fields: {e}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(delve_core::events::ChangePolicy::new(fields))
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct SubscribersConfig {
     pub webhook: Option<WebhookConfig>,
@@ -387,6 +416,7 @@ pub fn load(override_path: Option<&Path>) -> anyhow::Result<Config> {
                 vendors: VendorsConfig::default(),
                 transport: TransportConfig::default(),
                 subscribers: SubscribersConfig::default(),
+                notifications: NotificationsConfig::default(),
                 database_path: default_db_path(),
             });
         }
@@ -504,6 +534,62 @@ mod tests {
             EmailTls::None
         );
         assert!(parse("ssl").is_err());
+    }
+
+    #[test]
+    fn notifications_default_to_watching_only_the_hash() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(
+            config.notifications.change_policy().unwrap(),
+            delve_core::events::ChangePolicy::default()
+        );
+    }
+
+    #[test]
+    fn notifications_changed_fields_parses_each_name() {
+        use delve_core::events::WatchedField;
+        let config: Config = toml::from_str(
+            r#"
+            [notifications]
+            changed_fields = ["sha256", "release_notes_url", "release_date"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.notifications.change_policy().unwrap().fields(),
+            [
+                WatchedField::Sha256,
+                WatchedField::ReleaseNotesUrl,
+                WatchedField::ReleaseDate
+            ]
+        );
+
+        let empty: Config = toml::from_str("[notifications]\nchanged_fields = []").unwrap();
+        assert!(empty
+            .notifications
+            .change_policy()
+            .unwrap()
+            .fields()
+            .is_empty());
+    }
+
+    #[test]
+    fn a_field_that_cant_be_watched_is_an_error_saying_why() {
+        let config: Config =
+            toml::from_str("[notifications]\nchanged_fields = [\"sha256\", \"version\"]").unwrap();
+        let err = config
+            .notifications
+            .change_policy()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("[notifications] changed_fields"), "{err}");
+        assert!(err.contains("'version'"), "{err}");
+    }
+
+    #[test]
+    fn a_mistyped_notifications_key_is_an_error() {
+        let err = toml::from_str::<Config>("[notifications]\nchanged_feilds = []").unwrap_err();
+        assert!(err.to_string().contains("changed_feilds"), "{err}");
     }
 
     #[test]
