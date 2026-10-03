@@ -2,11 +2,13 @@
 //! digs" section for the full rationale, and the baseline/incremental
 //! logic and the correctness notes this implementation follows closely.
 
+use std::collections::HashMap;
+
 use uuid::Uuid;
 
 use crate::context::ScrapeContext;
 use crate::events::{EventBus, FieldDiff, FirmwareEvent};
-use crate::model::VersionDirection;
+use crate::model::{FirmwareMetadata, VersionDirection};
 use crate::plugin::{PluginError, VendorPlugin};
 #[cfg(test)]
 use crate::store::StoredFirmware;
@@ -122,6 +124,17 @@ async fn run_loop(
 ) -> Result<(), EngineError> {
     let refs = vendor.discover(ctx).await?;
 
+    // The newest version known for each line (vendor/device_family/hardware)
+    // *before this dig*, looked up the first time the line comes up — which is
+    // always before this dig stores anything for it. Every release of the line
+    // is compared with this, not with the store's running state: otherwise each
+    // release would be compared with ones stored moments earlier in the same
+    // dig, so a line delve had never seen would read as one new release and a
+    // string of "updates" and "downgrades", in whatever order the vendor's API
+    // happened to list them.
+    let mut known_before_dig: HashMap<(String, Vec<String>), Option<FirmwareMetadata>> =
+        HashMap::new();
+
     for r in refs {
         let mut fresh = vendor.metadata(ctx, &r).await?;
         // Populated here rather than left to each plugin author — guarantees
@@ -136,15 +149,23 @@ async fn run_loop(
         // stored exactly this version before" (catches a vendor silently
         // rebuilding an already-published version number); `latest_known`
         // asks "what's the newest version we knew about for this line
-        // before this observation" (the only way to detect an ordinary
-        // version bump and its direction — `lookup`'s exact-version key can
-        // never match a version that just arrived for the first time, so on
-        // its own it can't tell a bump apart from a first-ever release).
+        // before this dig" (the only way to detect an ordinary version bump
+        // and its direction — `lookup`'s exact-version key can never match a
+        // version that just arrived for the first time, so on its own it
+        // can't tell a bump apart from a first-ever release).
         let exact_key = crate::store::FirmwareKey::from_ref_and_metadata(&r, &fresh);
         let exact_prior = store.lookup(&exact_key).await?;
-        let latest_known_before_this = store
-            .latest_known(&fresh.vendor, &fresh.device_family, &fresh.hardware_targets)
-            .await?;
+        let line = (fresh.device_family.clone(), fresh.hardware_targets.clone());
+        let latest_known_before_dig = match known_before_dig.get(&line) {
+            Some(known) => known.clone(),
+            None => {
+                let known = store
+                    .latest_known(&fresh.vendor, &fresh.device_family, &fresh.hardware_targets)
+                    .await?;
+                known_before_dig.insert(line, known.clone());
+                known
+            }
+        };
 
         // Always persisted, regardless of run_kind.
         store.upsert(&r, &fresh, run_id).await?;
@@ -171,9 +192,11 @@ async fn run_loop(
                 .await;
             }
             Some(_) => {} // exact same version and hash already known — no event
-            None => match latest_known_before_this {
-                // First version ever observed for this vendor/device_family/
-                // hardware line — genuinely new, not a bump from anything.
+            None => match latest_known_before_dig {
+                // Nothing was known for this vendor/device_family/hardware
+                // line before this dig, so every release of it is new to
+                // delve — not a bump from anything, including from another
+                // release found earlier in this same dig.
                 None => {
                     bus.publish(FirmwareEvent::NewRelease {
                         firmware: fresh,
@@ -182,10 +205,12 @@ async fn run_loop(
                     .await;
                 }
                 // A version we've never stored before has arrived, and we
-                // did already know some other version for this line — this
-                // is the version-bump case, and version_direction here can
-                // actually be Newer or Older (not just Unordered), since
-                // `old` and `fresh` are genuinely different versions.
+                // already knew some other version for this line before the
+                // dig — this is the version-bump case, and version_direction
+                // here can actually be Newer or Older (not just Unordered),
+                // since `old` and `fresh` are genuinely different versions.
+                // Older means the vendor published a version below the
+                // newest one delve knew before this dig.
                 Some(old) => {
                     let changed_fields = diff_fields(&old, &fresh);
                     let version_direction = VersionDirection::between(&old.version, &fresh.version);
@@ -746,6 +771,161 @@ mod tests {
             FirmwareEvent::NewRelease { firmware, .. } => assert_eq!(firmware.device_family, "gadget"),
             other => panic!("a first-ever version for a different device family must be NewRelease, got {other:?}"),
         }
+    }
+
+    /// A plugin that discovers `releases` in the given order, one URL each.
+    fn plugin_returning(releases: Vec<FirmwareMetadata>) -> MockPlugin {
+        let mut refs = Vec::new();
+        let mut metadata_by_url = HashMap::new();
+        for (i, m) in releases.into_iter().enumerate() {
+            let url = format!("https://example.test/r{i}");
+            refs.push(firmware_ref(&url));
+            metadata_by_url.insert(url, Ok(m));
+        }
+        MockPlugin {
+            refs,
+            metadata_by_url,
+        }
+    }
+
+    /// A store whose baseline is complete and which knows `known` already.
+    async fn store_after_baseline(known: Vec<FirmwareMetadata>) -> MockStore {
+        let store = MockStore::default();
+        for m in known {
+            store
+                .upsert(
+                    &firmware_ref("https://example.test/prior"),
+                    &m,
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+        }
+        store.mark_baseline_complete("mockvendor").await.unwrap();
+        store
+    }
+
+    /// Each event as `new <version>` or `<previous> -> <version> <direction>`.
+    fn describe(events: &[FirmwareEvent]) -> Vec<String> {
+        events
+            .iter()
+            .map(|e| match e {
+                FirmwareEvent::NewRelease { firmware, .. } => {
+                    format!("new {}", firmware.version.raw)
+                }
+                FirmwareEvent::UpdatedRelease {
+                    firmware,
+                    previous,
+                    version_direction,
+                    ..
+                } => format!(
+                    "{} -> {} {version_direction:?}",
+                    previous.version.raw, firmware.version.raw
+                ),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_line_first_seen_after_the_baseline_reports_every_release_as_new_in_any_order() {
+        // A device that wasn't tracked at the baseline, such as a newly
+        // enabled product: its history is new to delve, not a series of
+        // updates and downgrades, whatever order the vendor lists it in.
+        for order in [[1u64, 3, 2], [3, 2, 1], [1, 2, 3]] {
+            let store = store_after_baseline(vec![]).await;
+            let plugin = plugin_returning(
+                order
+                    .iter()
+                    .map(|&v| metadata(&format!("{v}.0.0"), vec![v, 0, 0], v as u8))
+                    .collect(),
+            );
+            let (bus, events) = bus_with_collector();
+            dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+
+            let expected: Vec<String> = order.iter().map(|v| format!("new {v}.0.0")).collect();
+            assert_eq!(
+                describe(&events.lock().unwrap()),
+                expected,
+                "order {order:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn several_new_versions_of_a_known_line_are_each_compared_with_what_was_known_before_the_dig(
+    ) {
+        let store = store_after_baseline(vec![metadata("2.0.0", vec![2, 0, 0], 2)]).await;
+        // 3.0.0 is newer than anything known; 2.5.0 and 1.5.0 arrive after it
+        // in the same dig and must not be reported as downgrades from 3.0.0.
+        let plugin = plugin_returning(vec![
+            metadata("3.0.0", vec![3, 0, 0], 3),
+            metadata("2.5.0", vec![2, 5, 0], 4),
+            metadata("1.5.0", vec![1, 5, 0], 5),
+        ]);
+        let (bus, events) = bus_with_collector();
+        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+
+        assert_eq!(
+            describe(&events.lock().unwrap()),
+            [
+                "2.0.0 -> 3.0.0 Newer",
+                "2.0.0 -> 2.5.0 Newer",
+                // Older than what was known before the dig: a version the
+                // vendor published below the latest, which is what Older is for.
+                "2.0.0 -> 1.5.0 Older",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_known_line_and_a_new_line_in_one_dig_do_not_affect_each_other() {
+        let store = store_after_baseline(vec![metadata("1.0.0", vec![1, 0, 0], 1)]).await;
+        let mut other = metadata("5.0.0", vec![5, 0, 0], 9);
+        other.hardware_targets = vec!["isr4351".into()];
+        let mut other_older = metadata("4.0.0", vec![4, 0, 0], 8);
+        other_older.hardware_targets = vec!["isr4351".into()];
+
+        let plugin = plugin_returning(vec![
+            other,
+            metadata("1.1.0", vec![1, 1, 0], 2),
+            other_older,
+        ]);
+        let (bus, events) = bus_with_collector();
+        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+
+        assert_eq!(
+            describe(&events.lock().unwrap()),
+            ["new 5.0.0", "1.0.0 -> 1.1.0 Newer", "new 4.0.0"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_dig_compares_with_everything_the_first_one_stored() {
+        // The pre-dig state is per dig: what one dig stores is "known" to the next.
+        let store = store_after_baseline(vec![]).await;
+        let (bus, _) = bus_with_collector();
+        dig_vendor(
+            &plugin_returning(vec![metadata("1.0.0", vec![1, 0, 0], 1)]),
+            &ctx(),
+            &store,
+            &bus,
+        )
+        .await
+        .unwrap();
+
+        let (bus, events) = bus_with_collector();
+        dig_vendor(
+            &plugin_returning(vec![
+                metadata("1.0.0", vec![1, 0, 0], 1),
+                metadata("1.1.0", vec![1, 1, 0], 2),
+            ]),
+            &ctx(),
+            &store,
+            &bus,
+        )
+        .await
+        .unwrap();
+        assert_eq!(describe(&events.lock().unwrap()), ["1.0.0 -> 1.1.0 Newer"]);
     }
 
     #[tokio::test]
