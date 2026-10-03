@@ -2,21 +2,20 @@
 //! `delve-cli`, same pattern as `subscriber-webhook` (see the README's
 //! "Notifications" section).
 //!
-//! **Batching.** By default the events of one dig are held back and sent as
-//! one message when the dig is over (`Subscriber::flush`): a single event
-//! gets the ordinary message, and two or more get a digest, split into several
-//! messages only past `max_events_per_message`. Without batching every event
-//! is sent as it arrives. Either way a vendor's first dig is a silent
+//! **Batching.** A dig's events arrive together, once the whole dig is over
+//! (`Subscriber::notify`). By default they are sent as one message: a single
+//! event gets the ordinary message, and two or more get a digest, split into
+//! several messages only past `max_events_per_message`. Without batching each
+//! event is its own message. Either way a vendor's first dig is a silent
 //! baseline, so a busy dig means a later one that finds a lot at once.
 //!
-//! Events are only in memory until the flush, so a process that is killed
-//! before it loses them. The engine flushes however a dig ends, including
-//! when it fails part-way.
+//! Events are only in memory until the dig ends, so a process that is killed
+//! before then loses them (they are still in the log). The CLI delivers
+//! however a dig ends, including when a vendor fails part-way.
 
 mod digest;
 
 use std::fmt::Display;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -71,8 +70,6 @@ pub struct EmailSubscriber<T> {
     to: Vec<Mailbox>,
     /// `Some(max)` when batching, with at most `max` events per message.
     batching: Option<usize>,
-    /// Events held back until the next flush.
-    pending: Mutex<Vec<FirmwareEvent>>,
 }
 
 impl EmailSubscriber<AsyncSmtpTransport<Tokio1Executor>> {
@@ -146,12 +143,11 @@ impl<T> EmailSubscriber<T> {
             from,
             to,
             batching: None,
-            pending: Mutex::new(Vec::new()),
         })
     }
 
-    /// Holds events back and sends a digest on `flush`, with at most
-    /// `max_events_per_message` events in each message (at least 1).
+    /// Sends a dig's events as a digest instead of one message each, with at
+    /// most `max_events_per_message` events in each message (at least 1).
     #[must_use]
     pub fn batched(mut self, max_events_per_message: usize) -> Self {
         self.batching = Some(max_events_per_message.max(1));
@@ -173,24 +169,11 @@ where
         "email"
     }
 
-    async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError> {
-        if self.batching.is_some() {
-            self.pending
-                .lock()
-                .expect("pending events lock")
-                .push(event.clone());
-            return Ok(());
+    async fn notify(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError> {
+        match self.batching {
+            Some(max) => self.send_batch(events, max).await,
+            None => self.send_each(events).await,
         }
-        let (subject, body) = render(event);
-        self.send(subject, body).await
-    }
-
-    async fn flush(&self) -> Result<(), SubscriberError> {
-        let Some(max) = self.batching else {
-            return Ok(());
-        };
-        let events = std::mem::take(&mut *self.pending.lock().expect("pending events lock"));
-        self.send_batch(events, max).await
     }
 }
 
@@ -217,15 +200,14 @@ where
         Ok(())
     }
 
-    /// Sends what a dig held back: nothing for no events, the ordinary
+    /// Sends a dig's events batched: nothing for no events, the ordinary
     /// message for one, and a digest (or several, past `max` events) for more.
-    /// Every message is tried even if an earlier one fails.
     async fn send_batch(
         &self,
-        events: Vec<FirmwareEvent>,
+        events: &[FirmwareEvent],
         max: usize,
     ) -> Result<(), SubscriberError> {
-        match events.as_slice() {
+        match events {
             [] => return Ok(()),
             [only] => {
                 let (subject, body) = render(only);
@@ -234,13 +216,27 @@ where
             _ => {}
         }
 
-        let events = digest::sorted(events);
+        let events = digest::sorted(events.to_vec());
         let chunks: Vec<&[FirmwareEvent]> = events.chunks(max).collect();
         let total = chunks.len();
-        let (mut failed, mut first_error) = (0, None);
-        for (i, chunk) in chunks.into_iter().enumerate() {
+        let messages = chunks.into_iter().enumerate().map(|(i, chunk)| {
             let part = (total > 1).then_some((i + 1, total));
-            let (subject, body) = digest::render_digest(chunk, part);
+            digest::render_digest(chunk, part)
+        });
+        self.send_all(messages.collect()).await
+    }
+
+    /// Sends each event as its own message, in order.
+    async fn send_each(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError> {
+        self.send_all(events.iter().map(render).collect()).await
+    }
+
+    /// Sends every `(subject, body)`, trying each even if an earlier one
+    /// fails, and reports how many failed.
+    async fn send_all(&self, messages: Vec<(String, String)>) -> Result<(), SubscriberError> {
+        let total = messages.len();
+        let (mut failed, mut first_error) = (0, None);
+        for (subject, body) in messages {
             if let Err(e) = self.send(subject, body).await {
                 failed += 1;
                 first_error.get_or_insert(e);
@@ -678,7 +674,7 @@ mod tests {
         )
         .unwrap();
 
-        subscriber.notify(&new_release("1.0")).await.unwrap();
+        subscriber.notify(&[new_release("1.0")]).await.unwrap();
 
         let sent = transport.messages().await;
         assert_eq!(sent.len(), 1);
@@ -703,7 +699,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = subscriber.notify(&new_release("1.0")).await.unwrap_err();
+        let err = subscriber.notify(&[new_release("1.0")]).await.unwrap_err();
         assert!(matches!(err, SubscriberError::Delivery(_)), "{err}");
     }
 
@@ -771,7 +767,7 @@ mod tests {
         .unwrap();
 
         subscriber
-            .notify(&updated("1.0", "1.1", VersionDirection::Newer))
+            .notify(&[updated("1.0", "1.1", VersionDirection::Newer)])
             .await
             .unwrap();
 
@@ -806,7 +802,7 @@ mod tests {
         })
         .unwrap();
 
-        let err = subscriber.notify(&new_release("1.0")).await.unwrap_err();
+        let err = subscriber.notify(&[new_release("1.0")]).await.unwrap_err();
         assert!(matches!(err, SubscriberError::Delivery(_)), "{err}");
     }
 
@@ -846,15 +842,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_batching_subscriber_sends_nothing_until_flush() {
+    async fn a_dig_with_several_events_is_one_message() {
         let transport = AsyncStubTransport::new_ok();
         let subscriber = batched(transport.clone(), 50);
-
-        subscriber.notify(&release(1)).await.unwrap();
-        subscriber.notify(&release(2)).await.unwrap();
-        assert!(transport.messages().await.is_empty());
-
-        subscriber.flush().await.unwrap();
+        subscriber.notify(&[release(1), release(2)]).await.unwrap();
         assert_eq!(transport.messages().await.len(), 1);
     }
 
@@ -862,10 +853,8 @@ mod tests {
     async fn a_burst_is_one_digest_that_counts_the_changes() {
         let transport = AsyncStubTransport::new_ok();
         let subscriber = batched(transport.clone(), 50);
-        for n in 1..=26 {
-            subscriber.notify(&release(n)).await.unwrap();
-        }
-        subscriber.flush().await.unwrap();
+        let events: Vec<_> = (1..=26).map(release).collect();
+        subscriber.notify(&events).await.unwrap();
 
         let sent = transport.messages().await;
         assert_eq!(sent.len(), 1, "26 events must be one message");
@@ -890,8 +879,7 @@ mod tests {
     async fn one_event_gets_the_ordinary_message_not_a_digest() {
         let transport = AsyncStubTransport::new_ok();
         let subscriber = batched(transport.clone(), 50);
-        subscriber.notify(&release(1)).await.unwrap();
-        subscriber.flush().await.unwrap();
+        subscriber.notify(&[release(1)]).await.unwrap();
 
         assert_eq!(
             subjects(&transport).await,
@@ -901,31 +889,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_events_send_nothing_and_a_second_flush_sends_nothing_new() {
-        let transport = AsyncStubTransport::new_ok();
-        let subscriber = batched(transport.clone(), 50);
-        subscriber.flush().await.unwrap();
-        assert!(transport.messages().await.is_empty());
-
-        subscriber.notify(&release(1)).await.unwrap();
-        subscriber.notify(&release(2)).await.unwrap();
-        subscriber.flush().await.unwrap();
-        subscriber.flush().await.unwrap();
-        assert_eq!(
-            transport.messages().await.len(),
-            1,
-            "what was sent is not kept"
-        );
+    async fn no_events_send_nothing() {
+        // The bus never calls notify with nothing, but an empty slice is
+        // still handled.
+        for subscriber in [
+            batched(AsyncStubTransport::new_ok(), 50),
+            EmailSubscriber::with_transport(
+                AsyncStubTransport::new_ok(),
+                "delve@example.test",
+                &recipients(&["ops@example.test"]),
+            )
+            .unwrap(),
+        ] {
+            subscriber.notify(&[]).await.unwrap();
+            assert!(subscriber.transport.messages().await.is_empty());
+        }
     }
 
     #[tokio::test]
     async fn a_burst_past_the_cap_is_split_into_numbered_messages() {
         let transport = AsyncStubTransport::new_ok();
         let subscriber = batched(transport.clone(), 3);
-        for n in 1..=7 {
-            subscriber.notify(&release(n)).await.unwrap();
-        }
-        subscriber.flush().await.unwrap();
+        let events: Vec<_> = (1..=7).map(release).collect();
+        subscriber.notify(&events).await.unwrap();
 
         let subjects = subjects(&transport).await;
         assert_eq!(subjects.len(), 3, "{subjects:?}");
@@ -961,14 +947,12 @@ mod tests {
     async fn the_cap_is_at_least_one() {
         let transport = AsyncStubTransport::new_ok();
         let subscriber = batched(transport.clone(), 0);
-        subscriber.notify(&release(1)).await.unwrap();
-        subscriber.notify(&release(2)).await.unwrap();
-        subscriber.flush().await.unwrap();
+        subscriber.notify(&[release(1), release(2)]).await.unwrap();
         assert_eq!(transport.messages().await.len(), 2);
     }
 
     #[tokio::test]
-    async fn without_batching_events_are_sent_as_they_arrive_and_flush_does_nothing() {
+    async fn without_batching_each_event_is_its_own_message() {
         let transport = AsyncStubTransport::new_ok();
         let subscriber = EmailSubscriber::with_transport(
             transport.clone(),
@@ -977,11 +961,11 @@ mod tests {
         )
         .unwrap();
 
-        subscriber.notify(&release(1)).await.unwrap();
-        subscriber.notify(&release(2)).await.unwrap();
-        assert_eq!(transport.messages().await.len(), 2);
-        subscriber.flush().await.unwrap();
-        assert_eq!(transport.messages().await.len(), 2);
+        subscriber.notify(&[release(1), release(2)]).await.unwrap();
+        assert_eq!(
+            subjects(&transport).await,
+            [render(&release(1)).0, render(&release(2)).0]
+        );
     }
 
     fn other_device(mut event: FirmwareEvent, vendor: &str, hardware: &str) -> FirmwareEvent {
@@ -1136,11 +1120,9 @@ mod tests {
         )
         .unwrap()
         .batched(2);
-        for n in 1..=6 {
-            subscriber.notify(&release(n)).await.unwrap();
-        }
+        let events: Vec<_> = (1..=6).map(release).collect();
 
-        let err = subscriber.flush().await.unwrap_err();
+        let err = subscriber.notify(&events).await.unwrap_err();
 
         assert!(err.to_string().contains("1 of 3 messages failed"), "{err}");
         assert_eq!(
@@ -1148,6 +1130,25 @@ mod tests {
             2,
             "the other two went out"
         );
+    }
+
+    #[tokio::test]
+    async fn without_batching_a_failed_message_does_not_stop_the_rest() {
+        let subscriber = EmailSubscriber::with_transport(
+            FlakyTransport {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                sent: Mutex::new(Vec::new()),
+            },
+            "delve@example.test",
+            &recipients(&["ops@example.test"]),
+        )
+        .unwrap();
+        let events: Vec<_> = (1..=3).map(release).collect();
+
+        let err = subscriber.notify(&events).await.unwrap_err();
+
+        assert!(err.to_string().contains("1 of 3 messages failed"), "{err}");
+        assert_eq!(subscriber.transport.sent.lock().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -1159,10 +1160,10 @@ mod tests {
         )
         .unwrap()
         .batched(50);
-        subscriber.notify(&release(1)).await.unwrap();
-        subscriber.notify(&release(2)).await.unwrap();
-
-        let err = subscriber.flush().await.unwrap_err();
+        let err = subscriber
+            .notify(&[release(1), release(2)])
+            .await
+            .unwrap_err();
         assert!(matches!(err, SubscriberError::Delivery(_)), "{err}");
     }
 }

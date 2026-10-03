@@ -389,7 +389,6 @@ dependencies = [
  "serde",
  "sha2",
  "subscriber-email",
- "subscriber-log",
  "subscriber-webhook",
  "tokio",
  "toml",
@@ -415,6 +414,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -2132,19 +2132,6 @@ dependencies = [
  "delve-core",
  "lettre",
  "tokio",
- "url",
-]
-
-[[package]]
-name = "subscriber-log"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "delve-core",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "url",
 ]
 

@@ -1,6 +1,7 @@
-//! Webhook subscriber — POSTs a JSON payload to a configured URL for every
-//! event. Feature-gated in `delve-cli`, same pattern as vendor crates (see
-//! the README's "Notifications" section, which documents the payload).
+//! Webhook subscriber — POSTs one JSON payload holding every event of a dig to
+//! a configured URL, once the dig is over. Feature-gated in `delve-cli`, same
+//! pattern as vendor crates (see the README's "Webhook" section, which
+//! documents the payload).
 //!
 //! The payload is its own type, separate from `FirmwareEvent`, so the JSON
 //! can evolve without coupling to the engine's internal representation.
@@ -50,11 +51,27 @@ impl WebhookSubscriber {
     }
 }
 
-/// The wire payload. Every key is always present: a value that doesn't apply
-/// to an event is `null`, so a receiver never has to test for a missing key.
+/// The wire payload: the schema number and the dig's events, in the order
+/// they were found.
 #[derive(Serialize)]
 struct WebhookPayload<'a> {
     schema: u32,
+    events: Vec<EventPayload<'a>>,
+}
+
+impl<'a> WebhookPayload<'a> {
+    fn new(events: &'a [FirmwareEvent]) -> Self {
+        Self {
+            schema: SCHEMA_VERSION,
+            events: events.iter().map(EventPayload::from).collect(),
+        }
+    }
+}
+
+/// One event. Every key is always present: a value that doesn't apply to an
+/// event is `null`, so a receiver never has to test for a missing key.
+#[derive(Serialize)]
+struct EventPayload<'a> {
     /// `NewRelease` or `UpdatedRelease`.
     kind: &'static str,
     vendor: &'a str,
@@ -87,7 +104,7 @@ struct ChangedField<'a> {
     after: &'a str,
 }
 
-impl<'a> From<&'a FirmwareEvent> for WebhookPayload<'a> {
+impl<'a> From<&'a FirmwareEvent> for EventPayload<'a> {
     fn from(event: &'a FirmwareEvent) -> Self {
         let (kind, firmware, previous, direction, changed, first_seen) = match event {
             FirmwareEvent::NewRelease {
@@ -130,7 +147,6 @@ impl<'a> From<&'a FirmwareEvent> for WebhookPayload<'a> {
         };
 
         Self {
-            schema: SCHEMA_VERSION,
             kind,
             vendor: &firmware.vendor,
             device_family: &firmware.device_family,
@@ -157,8 +173,8 @@ impl Subscriber for WebhookSubscriber {
         "webhook"
     }
 
-    async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError> {
-        let payload = WebhookPayload::from(event);
+    async fn notify(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError> {
+        let payload = WebhookPayload::new(events);
         self.client
             .post(&self.url)
             .json(&payload)
@@ -227,8 +243,22 @@ mod tests {
         }
     }
 
+    /// One event as it appears in the payload's `events`.
     fn payload(event: &FirmwareEvent) -> Value {
-        serde_json::to_value(WebhookPayload::from(event)).unwrap()
+        serde_json::to_value(EventPayload::from(event)).unwrap()
+    }
+
+    #[test]
+    fn the_payload_holds_the_schema_and_every_event_in_order() {
+        let events = [new_release(), updated(VersionDirection::Newer)];
+        let body = serde_json::to_value(WebhookPayload::new(&events)).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "schema": 1,
+                "events": [payload(&events[0]), payload(&events[1])],
+            })
+        );
     }
 
     #[test]
@@ -236,7 +266,6 @@ mod tests {
         assert_eq!(
             payload(&new_release()),
             json!({
-                "schema": 1,
                 "kind": "NewRelease",
                 "vendor": "unifi",
                 "device_family": "USW",
@@ -260,7 +289,6 @@ mod tests {
         assert_eq!(
             payload(&updated(VersionDirection::Newer)),
             json!({
-                "schema": 1,
                 "kind": "UpdatedRelease",
                 "vendor": "unifi",
                 "device_family": "USW",
@@ -289,7 +317,7 @@ mod tests {
             k.sort();
             k
         };
-        // Both kinds have the same 15 keys, and a bare event still does.
+        // Both kinds have the same 14 keys, and a bare event still does.
         let mut bare = firmware("v1", 1);
         bare.release_date = None;
         bare.sha256 = None;
@@ -301,7 +329,7 @@ mod tests {
         };
 
         let new = keys(payload(&new_release()));
-        assert_eq!(new.len(), 15, "{new:?}");
+        assert_eq!(new.len(), 14, "{new:?}");
         assert_eq!(new, keys(payload(&updated(VersionDirection::Newer))));
         assert_eq!(new, keys(payload(&bare_event)));
 
@@ -378,27 +406,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_payload_is_posted_as_json() {
+    async fn a_dig_is_posted_as_one_json_request_holding_every_event() {
         let (url, received) = serve_once(200, Duration::ZERO);
-        WebhookSubscriber::new(url)
-            .notify(&updated(VersionDirection::Newer))
-            .await
-            .unwrap();
+        let events = [new_release(), updated(VersionDirection::Newer)];
+        WebhookSubscriber::new(url).notify(&events).await.unwrap();
 
+        // serve_once takes one request; a second would never be answered.
         let (content_type, body) = received.recv().unwrap();
         assert!(
             content_type.starts_with("application/json"),
             "{content_type}"
         );
         let sent: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(sent, payload(&updated(VersionDirection::Newer)));
+        assert_eq!(sent["schema"], 1);
+        assert_eq!(
+            sent["events"],
+            json!([payload(&events[0]), payload(&events[1])])
+        );
     }
 
     #[tokio::test]
     async fn an_error_status_is_a_delivery_error() {
         let (url, _received) = serve_once(500, Duration::ZERO);
         let err = WebhookSubscriber::new(url)
-            .notify(&new_release())
+            .notify(&[new_release()])
             .await
             .unwrap_err();
         assert!(matches!(err, SubscriberError::Delivery(_)), "{err}");
@@ -410,7 +441,7 @@ mod tests {
         let (url, _received) = serve_once(200, Duration::from_secs(10));
         let started = Instant::now();
         let err = WebhookSubscriber::with_timeout(url, Duration::from_millis(300))
-            .notify(&new_release())
+            .notify(&[new_release()])
             .await
             .unwrap_err();
 

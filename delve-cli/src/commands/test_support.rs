@@ -163,6 +163,8 @@ impl VendorPlugin for MockPlugin {
 #[derive(Clone, Default)]
 pub struct RecordingSubscriber {
     pub events: Arc<Mutex<Vec<FirmwareEvent>>>,
+    /// How many times `notify` was called.
+    pub deliveries: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[async_trait]
@@ -171,8 +173,10 @@ impl Subscriber for RecordingSubscriber {
         "recording"
     }
 
-    async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError> {
-        self.events.lock().unwrap().push(event.clone());
+    async fn notify(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError> {
+        self.events.lock().unwrap().extend_from_slice(events);
+        self.deliveries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }

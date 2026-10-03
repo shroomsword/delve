@@ -8,7 +8,6 @@ members = [
     "delve-vendors/vendor-cisco",
     "delve-vendors/vendor-unifi",
     "delve-subscribers/subscriber-email",
-    "delve-subscribers/subscriber-log",
     "delve-subscribers/subscriber-webhook",
 ]
 

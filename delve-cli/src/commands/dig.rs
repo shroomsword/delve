@@ -25,8 +25,7 @@ pub async fn run(
     // compiled in (see the cfg push below) — silence the warning on
     // builds without that feature rather than split this into two paths.
     #[allow(unused_mut)]
-    let mut subscribers: Vec<Box<dyn delve_core::events::Subscriber>> =
-        vec![Box::new(subscriber_log::LogSubscriber)];
+    let mut subscribers: Vec<Box<dyn delve_core::events::Subscriber>> = Vec::new();
     if let Some(webhook_cfg) = &config.subscribers.webhook {
         #[cfg(feature = "subscriber-webhook")]
         subscribers.push(Box::new(subscriber_webhook::WebhookSubscriber::new(
@@ -92,7 +91,34 @@ fn email_subscriber(
 
 /// Everything `run` does after building the event bus — split out so tests
 /// can drive a real dig with their own subscribers.
+///
+/// Every vendor's events are delivered to the subscribers together, once,
+/// after the last vendor, however the dig ended: a vendor that fails, or a
+/// setup error partway through, doesn't lose what the others found.
 pub async fn dig_vendors(
+    config: &Config,
+    registry: &PluginRegistry,
+    store: &dyn MetadataStore,
+    bus: &EventBus,
+    vendor_filter: Option<String>,
+    redig: bool,
+    allow_unreviewed: bool,
+) -> anyhow::Result<()> {
+    let result = dig_each_vendor(
+        config,
+        registry,
+        store,
+        bus,
+        vendor_filter,
+        redig,
+        allow_unreviewed,
+    )
+    .await;
+    bus.deliver().await;
+    result
+}
+
+async fn dig_each_vendor(
     config: &Config,
     registry: &PluginRegistry,
     store: &dyn MetadataStore,
@@ -619,6 +645,129 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("unknown vendor: nope"), "{err}");
     }
+    /// Digs `registry` twice: a silent baseline, then again after
+    /// `add` has given each vendor something new.
+    async fn baseline_then_dig(
+        registry: &PluginRegistry,
+        store: &dyn MetadataStore,
+        sub: &RecordingSubscriber,
+        add: impl FnOnce(),
+    ) -> anyhow::Result<()> {
+        dig(registry, store, sub, None, false).await.unwrap();
+        add();
+        dig(registry, store, sub, None, false).await
+    }
+
+    #[tokio::test]
+    async fn every_vendor_s_events_are_delivered_together_once_per_dig() {
+        let store = memory_store().await;
+        let acme = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let globex = MockPlugin::new("globex", vec![release("sprocket", "1.0", &[1, 0], 2)]);
+        let (acme_releases, globex_releases) = (acme.releases.clone(), globex.releases.clone());
+        let registry = registry(vec![acme, globex]);
+        let sub = RecordingSubscriber::default();
+
+        baseline_then_dig(&registry, &store, &sub, || {
+            acme_releases
+                .lock()
+                .unwrap()
+                .push(release("widget", "1.1", &[1, 1], 3));
+            globex_releases
+                .lock()
+                .unwrap()
+                .push(release("sprocket", "1.1", &[1, 1], 4));
+        })
+        .await
+        .unwrap();
+
+        // The baseline delivered nothing; the second dig made one delivery
+        // holding both vendors' events.
+        assert_eq!(sub.deliveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let mut vendors: Vec<String> = sub
+            .take()
+            .iter()
+            .map(|e| match e {
+                FirmwareEvent::NewRelease { firmware, .. }
+                | FirmwareEvent::UpdatedRelease { firmware, .. } => firmware.vendor.clone(),
+            })
+            .collect();
+        vendors.sort();
+        assert_eq!(vendors, ["acme", "globex"]);
+    }
+
+    #[tokio::test]
+    async fn what_other_vendors_found_is_delivered_when_one_fails() {
+        let store = memory_store().await;
+        let globex = MockPlugin::new("globex", vec![release("sprocket", "1.0", &[1, 0], 2)]);
+        let globex_releases = globex.releases.clone();
+        let sub = RecordingSubscriber::default();
+        // A baseline for both vendors.
+        let healthy = registry(vec![
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+            globex,
+        ]);
+        dig(&healthy, &store, &sub, None, false).await.unwrap();
+
+        // Then acme's portal goes down while globex publishes a release.
+        let mut broken = MockPlugin::new("acme", vec![]);
+        broken.fail_discover = Some("portal is down");
+        globex_releases
+            .lock()
+            .unwrap()
+            .push(release("sprocket", "1.1", &[1, 1], 3));
+        let globex = MockPlugin {
+            releases: globex_releases,
+            ..MockPlugin::new("globex", vec![])
+        };
+        let failing = registry(vec![broken, globex]);
+
+        let err = dig(&failing, &store, &sub, None, false).await.unwrap_err();
+        assert_eq!(err.to_string(), "dig failed for: acme");
+        assert_eq!(sub.deliveries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(sub.take().len(), 1, "globex's release is still delivered");
+    }
+
+    #[cfg(feature = "subscriber-email")]
+    #[tokio::test]
+    async fn two_vendors_with_changes_are_one_email() {
+        let (addr, received) = fake_smtp_server();
+        let config = config(&format!(
+            "[subscribers.email]\nhost = \"127.0.0.1\"\nport = {}\ntls = \"none\"\n\
+             from = \"Delve <delve@example.test>\"\nto = [\"ops@example.test\"]\n",
+            addr.port()
+        ));
+        let store = memory_store().await;
+        let acme = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let globex = MockPlugin::new("globex", vec![release("sprocket", "1.0", &[1, 0], 2)]);
+        let (acme_releases, globex_releases) = (acme.releases.clone(), globex.releases.clone());
+        let registry = registry(vec![acme, globex]);
+
+        run(&config, &registry, &store, None, false, false)
+            .await
+            .unwrap();
+        acme_releases
+            .lock()
+            .unwrap()
+            .push(release("widget", "1.1", &[1, 1], 3));
+        globex_releases
+            .lock()
+            .unwrap()
+            .push(release("sprocket", "1.1", &[1, 1], 4));
+        run(&config, &registry, &store, None, false, false)
+            .await
+            .unwrap();
+
+        let log = received.lock().unwrap().join("\n");
+        assert_eq!(
+            log.matches("MAIL FROM:<delve@example.test>").count(),
+            1,
+            "two vendors' changes in one dig must be one message: {log}"
+        );
+        assert!(log.contains("2 firmware changes"), "{log}");
+        assert!(log.contains("acme widget"), "{log}");
+        assert!(log.contains("globex sprocket"), "{log}");
+    }
+
     #[tokio::test]
     async fn a_failed_vendor_fails_the_dig_but_other_vendors_still_run() {
         let store = memory_store().await;
