@@ -11,7 +11,6 @@ path = "src/main.rs"
 [dependencies]
 delve-core.workspace = true
 delve-store-sqlite = { path = "../delve-store-sqlite" }
-subscriber-log = { path = "../delve-subscribers/subscriber-log" }
 subscriber-webhook = { path = "../delve-subscribers/subscriber-webhook", optional = true }
 subscriber-email = { path = "../delve-subscribers/subscriber-email", optional = true }
 vendor-cisco = { path = "../delve-vendors/vendor-cisco", optional = true }

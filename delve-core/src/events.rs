@@ -206,28 +206,29 @@ pub enum SubscriberError {
     Configuration(String),
 }
 
+/// Somewhere a dig's events are delivered: an email, a webhook.
 #[async_trait]
 pub trait Subscriber: Send + Sync {
     fn id(&self) -> &'static str;
-    async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError>;
 
-    /// Called once when a vendor's dig is over, after the last event, **whether
-    /// the dig succeeded or failed**. A subscriber that holds events back (the
-    /// email subscriber batches a dig's events into one message) sends them
-    /// here. The default does nothing, for subscribers that act on each event
-    /// as it arrives.
-    async fn flush(&self) -> Result<(), SubscriberError> {
-        Ok(())
-    }
+    /// Delivers every event of one `dig`, in the order they were found, once
+    /// the dig is over: after the last vendor, whether or not every vendor
+    /// succeeded. Called once per dig, and never with an empty slice — a dig
+    /// that found nothing notifies no one.
+    async fn notify(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError>;
 }
 
-/// Fans an event out to every registered subscriber concurrently. One
-/// slow/broken subscriber never blocks another — failures are logged and
-/// swallowed here rather than propagated, since a webhook being down
-/// shouldn't fail the whole `dig`.
+/// Collects a dig's events and delivers them to every subscriber at once
+/// when the dig is over (see [`EventBus::deliver`]). Each event is logged as
+/// it is published, so the log is a complete record of what a dig found,
+/// whenever it ends and whatever happens to delivery. Delivery to the
+/// subscribers is concurrent, and one slow or broken subscriber never blocks
+/// another — failures are logged rather than propagated, since a webhook
+/// being down shouldn't fail the whole `dig`.
 pub struct EventBus {
     subscribers: Vec<Box<dyn Subscriber>>,
     change_policy: ChangePolicy,
+    pending: std::sync::Mutex<Vec<FirmwareEvent>>,
 }
 
 impl EventBus {
@@ -236,6 +237,7 @@ impl EventBus {
         Self {
             subscribers,
             change_policy: ChangePolicy::default(),
+            pending: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -250,23 +252,89 @@ impl EventBus {
         &self.change_policy
     }
 
-    /// Tells every subscriber the dig is over. Like `publish`, a failure is
-    /// logged and does not stop the others.
-    pub async fn flush(&self) {
-        let futures = self.subscribers.iter().map(|s| s.flush());
-        for result in futures::future::join_all(futures).await {
+    /// Logs `event` now, and holds it for [`deliver`](Self::deliver).
+    pub fn publish(&self, event: FirmwareEvent) {
+        log_event(&event);
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+    }
+
+    /// How many events are waiting for [`deliver`](Self::deliver).
+    pub fn pending(&self) -> usize {
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Hands every event published since the last delivery to every
+    /// subscriber, in one `notify` call each, and empties the queue. Call it
+    /// once, when the whole dig is over — including when a vendor failed, so
+    /// what the others found is still delivered. With nothing to deliver, no
+    /// subscriber is called. A failure is logged and does not stop the others.
+    pub async fn deliver(&self) {
+        let events = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        if events.is_empty() {
+            return;
+        }
+        let futures = self.subscribers.iter().map(|s| s.notify(&events));
+        let results = futures::future::join_all(futures).await;
+        for (subscriber, result) in self.subscribers.iter().zip(results) {
             if let Err(e) = result {
-                tracing::warn!(error = %e, "subscriber flush failed");
+                tracing::warn!(
+                    subscriber = subscriber.id(),
+                    events = events.len(),
+                    error = %e,
+                    "subscriber notification failed"
+                );
             }
         }
     }
+}
 
-    pub async fn publish(&self, event: FirmwareEvent) {
-        let futures = self.subscribers.iter().map(|s| s.notify(&event));
-        for result in futures::future::join_all(futures).await {
-            if let Err(e) = result {
-                tracing::warn!(error = %e, "subscriber notification failed");
-            }
+/// Writes one line for `event` to the log: the vendor, the product name when
+/// there is one, the device family, the hardware and the version, plus the
+/// previous version and its direction for an update.
+fn log_event(event: &FirmwareEvent) {
+    match event {
+        FirmwareEvent::NewRelease {
+            firmware,
+            first_seen,
+        } => {
+            tracing::info!(
+                vendor = %firmware.vendor,
+                name = firmware.display_name.as_deref(),
+                device_family = %firmware.device_family,
+                hardware = %firmware.hardware_targets.join("+"),
+                version = %firmware.version.raw,
+                first_seen = %first_seen,
+                "new firmware release detected"
+            );
+        }
+        FirmwareEvent::UpdatedRelease {
+            firmware,
+            previous,
+            changed_fields,
+            version_direction,
+        } => {
+            tracing::info!(
+                vendor = %firmware.vendor,
+                name = firmware.display_name.as_deref(),
+                device_family = %firmware.device_family,
+                hardware = %firmware.hardware_targets.join("+"),
+                version = %firmware.version.raw,
+                previous_version = %previous.version.raw,
+                ?version_direction,
+                field_count = changed_fields.len(),
+                "firmware release updated"
+            );
         }
     }
 }
@@ -370,26 +438,46 @@ mod tests {
             .changes(&old, &old)
             .is_empty());
     }
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
+    use chrono::TimeZone;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
-    struct Flushed {
-        flushes: Arc<AtomicUsize>,
+    fn release(version: &str) -> FirmwareEvent {
+        let mut firmware = entry();
+        firmware.version = crate::model::VersionKey::opaque(version.to_string());
+        FirmwareEvent::NewRelease {
+            firmware,
+            first_seen: chrono::Utc.with_ymd_and_hms(2026, 10, 1, 12, 0, 0).unwrap(),
+        }
+    }
+
+    fn version_of(event: &FirmwareEvent) -> &str {
+        match event {
+            FirmwareEvent::NewRelease { firmware, .. }
+            | FirmwareEvent::UpdatedRelease { firmware, .. } => &firmware.version.raw,
+        }
+    }
+
+    /// The versions in each `notify` call a `Recorder` received.
+    type Calls = Arc<Mutex<Vec<Vec<String>>>>;
+
+    /// Records each `notify` call's versions, and fails if told to.
+    struct Recorder {
+        calls: Calls,
         fail: bool,
     }
 
     #[async_trait]
-    impl Subscriber for Flushed {
+    impl Subscriber for Recorder {
         fn id(&self) -> &'static str {
-            "flushed"
+            "recorder"
         }
 
-        async fn notify(&self, _event: &FirmwareEvent) -> Result<(), SubscriberError> {
-            Ok(())
-        }
-
-        async fn flush(&self) -> Result<(), SubscriberError> {
-            self.flushes.fetch_add(1, Ordering::SeqCst);
+        async fn notify(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(events.iter().map(|e| version_of(e).to_string()).collect());
             if self.fail {
                 Err(SubscriberError::Delivery("down".into()))
             } else {
@@ -398,41 +486,138 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn flush_reaches_every_subscriber_even_when_one_fails() {
-        let (a, b) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let bus = EventBus::new(vec![
-            Box::new(Flushed {
-                flushes: a.clone(),
-                fail: true,
+    fn recorder(fail: bool) -> (Box<dyn Subscriber>, Calls) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        (
+            Box::new(Recorder {
+                calls: calls.clone(),
+                fail,
             }),
-            Box::new(Flushed {
-                flushes: b.clone(),
-                fail: false,
-            }),
-        ]);
-
-        bus.flush().await;
-
-        assert_eq!((a.load(Ordering::SeqCst), b.load(Ordering::SeqCst)), (1, 1));
+            calls,
+        )
     }
 
-    struct NoFlush;
+    #[tokio::test]
+    async fn events_are_held_until_delivery_then_sent_once_in_order() {
+        let (sub, calls) = recorder(false);
+        let bus = EventBus::new(vec![sub]);
+        bus.publish(release("1"));
+        bus.publish(release("2"));
+        bus.publish(release("3"));
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "nothing is sent before delivery"
+        );
+        assert_eq!(bus.pending(), 3);
 
-    #[async_trait]
-    impl Subscriber for NoFlush {
-        fn id(&self) -> &'static str {
-            "no-flush"
+        bus.deliver().await;
+        assert_eq!(*calls.lock().unwrap(), [["1", "2", "3"]]);
+        assert_eq!(bus.pending(), 0);
+
+        // Delivered events aren't sent again.
+        bus.deliver().await;
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn nothing_to_deliver_calls_no_subscriber() {
+        let (sub, calls) = recorder(false);
+        EventBus::new(vec![sub]).deliver().await;
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delivery_reaches_every_subscriber_even_when_one_fails() {
+        let (failing, failing_calls) = recorder(true);
+        let (working, working_calls) = recorder(false);
+        let bus = EventBus::new(vec![failing, working]);
+        bus.publish(release("1"));
+        bus.deliver().await;
+        assert_eq!(failing_calls.lock().unwrap().len(), 1);
+        assert_eq!(*working_calls.lock().unwrap(), [["1"]]);
+    }
+
+    /// Collects what is logged so a test can read it back.
+    #[derive(Clone, Default)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
         }
-
-        async fn notify(&self, _event: &FirmwareEvent) -> Result<(), SubscriberError> {
+        fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
 
-    #[tokio::test]
-    async fn a_subscriber_that_does_not_batch_needs_no_flush() {
-        // The default `flush` does nothing, so existing subscribers are unchanged.
-        assert!(NoFlush.flush().await.is_ok());
+    /// Publishes `events` on a bus with no subscribers and returns the log.
+    fn logged(events: Vec<FirmwareEvent>) -> String {
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let bus = EventBus::new(vec![]);
+            for event in events {
+                bus.publish(event);
+            }
+        });
+        let bytes = capture.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn every_event_is_logged_when_it_is_published_not_when_it_is_delivered() {
+        let log = logged(vec![release("1.1"), release("1.2")]);
+        assert_eq!(
+            log.matches("new firmware release detected").count(),
+            2,
+            "{log}"
+        );
+        for field in [
+            "vendor=v",
+            "device_family=f",
+            "hardware=hw",
+            "version=1.1",
+            "version=1.2",
+        ] {
+            assert!(log.contains(field), "missing {field}: {log}");
+        }
+    }
+
+    #[test]
+    fn the_display_name_is_logged_when_there_is_one() {
+        let mut named = release("1.1");
+        if let FirmwareEvent::NewRelease { firmware, .. } = &mut named {
+            firmware.display_name = Some("Switch Flex Mini".into());
+        }
+        let log = logged(vec![named]);
+        assert!(log.contains("name=\"Switch Flex Mini\""), "{log}");
+        // With no name the field is left out, not logged empty.
+        assert!(!logged(vec![release("1.1")]).contains("name="));
+    }
+
+    #[test]
+    fn an_update_is_logged_with_both_versions() {
+        let mut previous = entry();
+        previous.version = crate::model::VersionKey::opaque("1.0".to_string());
+        let mut firmware = entry();
+        firmware.version = crate::model::VersionKey::opaque("1.1".to_string());
+        let log = logged(vec![FirmwareEvent::UpdatedRelease {
+            firmware,
+            previous,
+            changed_fields: vec![],
+            version_direction: VersionDirection::Newer,
+        }]);
+        for field in [
+            "version=1.1",
+            "previous_version=1.0",
+            "firmware release updated",
+        ] {
+            assert!(log.contains(field), "missing {field}: {log}");
+        }
     }
 }

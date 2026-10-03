@@ -85,9 +85,8 @@ delve-vendors/
   vendor-cisco/          discover/metadata implemented but unverified — see below
   vendor-unifi/          UniFi network-device firmware, verified against the live API
 delve-subscribers/
-  subscriber-log/        always-on audit-trail subscriber
-  subscriber-webhook/     POSTs events to a configured URL, feature-gated
-  subscriber-email/       sends one email per event over SMTP, feature-gated
+  subscriber-webhook/     POSTs a dig's events to a configured URL, feature-gated
+  subscriber-email/       emails a dig's events over SMTP, feature-gated
 ```
 
 `delve-store-sqlite` is its own crate rather than folded into `delve-core`,
@@ -676,20 +675,23 @@ pub enum FirmwareEvent {
 }
 ```
 
+- **Each subscriber is notified once per `dig`**, after the last vendor,
+  with every event the dig found across all vendors, in the order they were
+  found: `Subscriber::notify(&self, events: &[FirmwareEvent])`. This happens
+  **whether every vendor succeeded or not**, so one vendor failing doesn't
+  lose what the others found. A dig that found nothing, such as a baseline,
+  notifies no one.
+- **Every event is logged as it is found**, before and regardless of
+  delivery: logs aren't for subscribers, they are the record of what a dig
+  found. Each line names the vendor, the product name when there is one,
+  the device family, hardware and version (`new firmware release detected`
+  or `firmware release updated`, with the previous version and direction).
 - Built-in subscribers are feature-gated crates under `delve-subscribers/`:
-  `subscriber-log` (always on — an audit trail independent of whether
-  webhook/email delivery succeeds; each line names the vendor, device
-  family, hardware and version), `subscriber-webhook` (POSTs a JSON
-  payload, see [Webhook](#webhook)) and `subscriber-email` (see [Email](#email)).
-- Fan-out is concurrent; one slow or broken subscriber never blocks
+  `subscriber-webhook` (one POST per dig, see [Webhook](#webhook)) and
+  `subscriber-email` (one message per dig by default, see [Email](#email)).
+- Delivery is concurrent; one slow or broken subscriber never blocks
   another — failures are logged and swallowed at the bus level, since a
   webhook being down shouldn't fail the whole dig.
-- A subscriber that wants to hold events back and send them together
-  (`subscriber-email` does) implements `Subscriber::flush`. The engine calls
-  it once, on every subscriber, after the last event of each vendor's dig,
-  **whether the dig succeeded or failed**, including a baseline that
-  published nothing. The default does nothing, so a subscriber that acts on
-  each event as it arrives (the log and the webhook) needs no change.
 - `version_direction` on `UpdatedRelease` matters because a downgrade is a
   meaningfully different signal to a subscriber than an upgrade — it can
   mean a vendor pulled a bad release, or that you're scraping a beta
@@ -741,42 +743,52 @@ changed_fields = ["sha256", "release_notes_url", "release_date"]
 
 ### Webhook
 
-`subscriber-webhook` POSTs a JSON body to the URL in `[subscribers.webhook]`
-for every event, built with the `subscriber-webhook` Cargo feature:
+`subscriber-webhook` POSTs one JSON body per `dig` to the URL in
+`[subscribers.webhook]`, holding every event the dig found across all
+vendors, built with the `subscriber-webhook` Cargo feature:
 
 ```toml
 [subscribers.webhook]
 url = "https://example.com/hooks/delve"
 ```
 
-An update to a UniFi switch looks like this:
+A dig that found an update to a UniFi switch sends this (with more entries in
+`events` when it found more):
 
 ```json
 {
   "schema": 1,
-  "kind": "UpdatedRelease",
-  "vendor": "unifi",
-  "device_family": "USW",
-  "hardware_targets": ["USMINI"],
-  "display_name": "Switch Flex Mini",
-  "version": "v2.1.6+762",
-  "previous_version": "v2.1.3+755",
-  "version_direction": "newer",
-  "release_date": "2025-08-25",
-  "sha256": "29b1ee914d2e56f04cb30b52bc02b9fce31a1b06f90855e6a1976939e05a777c",
-  "source_url": "https://fw-update.ui.com/api/firmware/4cafc8c9-4830-41cf-afc4-ae678c19afed",
-  "release_notes_url": null,
-  "changed_fields": [
-    {"field": "version", "before": "v2.1.3+755", "after": "v2.1.6+762"},
-    {"field": "sha256", "before": "e542c87c…", "after": "29b1ee91…"}
-  ],
-  "first_seen": null
+  "events": [
+    {
+      "kind": "UpdatedRelease",
+      "vendor": "unifi",
+      "device_family": "USW",
+      "hardware_targets": ["USMINI"],
+      "display_name": "Switch Flex Mini",
+      "version": "v2.1.6+762",
+      "previous_version": "v2.1.3+755",
+      "version_direction": "newer",
+      "release_date": "2025-08-25",
+      "sha256": "29b1ee914d2e56f04cb30b52bc02b9fce31a1b06f90855e6a1976939e05a777c",
+      "source_url": "https://fw-update.ui.com/api/firmware/4cafc8c9-4830-41cf-afc4-ae678c19afed",
+      "release_notes_url": null,
+      "changed_fields": [
+        {"field": "version", "before": "v2.1.3+755", "after": "v2.1.6+762"},
+        {"field": "sha256", "before": "e542c87c…", "after": "29b1ee91…"}
+      ],
+      "first_seen": null
+    }
+  ]
 }
 ```
 
+The body has two keys: `schema`, the payload shape (currently `1`; it changes
+only when a key is removed or changes meaning, never for an added key), and
+`events`, the dig's events in the order they were found. A dig that found
+nothing sends no request. Each event has these keys:
+
 | Key | Meaning |
 |---|---|
-| `schema` | The payload shape, currently `1`. It changes only when a key is removed or changes meaning, never for an added key. |
 | `kind` | `NewRelease` (a version delve hadn't seen) or `UpdatedRelease` (a known version with a new hash, or a new version of a known device) |
 | `vendor`, `device_family`, `hardware_targets` | Which device. `hardware_targets` is a list, because an entry can cover more than one hardware revision. |
 | `display_name` | A human-readable product name when the plugin has one, else `null` |
@@ -787,14 +799,12 @@ An update to a UniFi switch looks like this:
 | `source_url`, `release_notes_url` | Where the release was found, and its notes when the vendor has a link |
 | `first_seen` | `NewRelease` only: when delve first saw it, as RFC 3339 to the second in UTC, like `2026-10-02T03:30:00Z` |
 
-- **Every key is always present.** A value that doesn't apply is `null`, so
-  a receiver never needs to test for a missing key. A `NewRelease` has
-  `"previous_version": null` where the very first payload simply left the key
-  out; `kind`, `version` and `previous_version` otherwise mean what they did.
+- **Every key is always present** in an event. A value that doesn't apply is
+  `null`, so a receiver never needs to test for a missing key.
 - **Ignore keys you don't know.** New keys can be added without a new `schema`.
-- **A request has 30 seconds.** An endpoint that doesn't answer fails that one
-  delivery and the dig carries on, like any other subscriber failure. A
-  non-2xx response is a failure too. There is no retry.
+- **A request has 30 seconds.** An endpoint that doesn't answer fails the
+  dig's delivery to it, which is logged; the dig's events are still in the
+  log. A non-2xx response is a failure too. There is no retry.
 - The body is not signed, so a receiver can't tell it came from delve. Put the
   URL somewhere it can't be guessed, and treat the body as untrusted input.
 
@@ -813,7 +823,7 @@ from = "Delve <delve@example.com>"      # a bare address or "Name <address>"
 to = ["ops@example.com", "sec@example.com"]
 username = "delve"                      # username and password go together, or neither
 password = "env:DELVE_SMTP_PASSWORD"    # "env:VAR_NAME" reads the environment, like vendor credentials
-batch = true                            # one message per dig (the default); false sends one per event
+batch = true                            # one message per dig (the default); false sends one per event, at the end
 max_events_per_email = 50               # with batch, the most events in one message (default 50, at least 1)
 ```
 
@@ -838,8 +848,8 @@ max_events_per_email = 50               # with batch, the most events in one mes
   `dig` at startup instead of running without the notifications you asked
   for. A server that is down fails only that message: the failure is logged
   and the dig carries on, like any other subscriber.
-- **One message per dig, not per event.** The events of a dig are held back
-  and sent when it is over. A burst, such as adding a model to a vendor
+- **One message per dig, not per event.** A dig's events, across every
+  vendor, are sent together when it is over. A burst, such as adding a model to a vendor
   without running `dig --vendor <id> --redig` once (see [Tracking only some
   models](#tracking-only-some-models)), or a vendor publishing many releases
   at once, is then one email and not dozens: adding a UniFi model produced 26
@@ -860,10 +870,10 @@ max_events_per_email = 50               # with batch, the most events in one mes
     events (50 unless you set it), and the rest go in further messages
     numbered `(part 1 of 3)`. Every message is tried even if an earlier one
     fails, and the failure is reported.
-  - `batch = false` sends each event as its own message as it arrives.
+  - `batch = false` sends each event as its own message, when the dig is over.
   - **The events are only in memory until the dig ends**, so a process that is
-    killed before then loses them. The engine sends what it has however a dig
-    ends, including when a vendor's dig fails part-way.
+    killed before then doesn't send them (they are in the log). `delve dig`
+    sends what it has however a dig ends, including when a vendor fails.
 - Without the Cargo feature, a `[subscribers.email]` section still parses
   but `dig` only logs a warning that it isn't compiled in.
 
@@ -1507,29 +1517,32 @@ exists because of it, not as a design decision made up front.
   record, and too few requests to measure pacing — to prove each check
   fails when it should and passes a conforming plugin. Also the mock
   server answering from its handler and recording each request.
-- **`delve-subscribers/subscriber-log`**: a new-release line and an update
-  line each name the vendor, device family, hardware and version, checked by
-  capturing what the subscriber actually logs.
+- **`delve-core` event bus**: events are held until delivery and sent once,
+  in order, and never again; nothing to deliver calls no subscriber; delivery
+  reaches every subscriber even when one fails; and every event is logged
+  when it is published (new-release and update lines naming the vendor,
+  product name, device family, hardware and versions, checked by capturing
+  the log). The engine leaves delivery to its caller, a failed vendor dig's
+  events are still delivered, and a baseline leaves nothing to deliver.
+  `delve-cli`: two vendors' events are one delivery, a failed vendor doesn't
+  stop the others' events being delivered, and two vendors' changes are one
+  email.
 - **`delve-subscribers/subscriber-webhook`**: the exact JSON for a new
-  release and for an update, every key being present for every kind of event
-  (including one with no date, hash, notes or name), the three original keys
-  keeping their meaning, the version direction spelled out, a real POST to a
-  local server arriving as `application/json` with the same body, an error
-  status being a delivery error, and an endpoint that never answers timing
-  out instead of holding up the dig.
-- **`delve-core` flush**: subscribers are flushed once after the last event
-  of a dig, after a dig that fails part-way, and after a baseline that
-  published nothing; the bus reaches every subscriber even when one's flush
-  fails; and the default `flush` does nothing.
-- **`delve-subscribers/subscriber-email`** batching: nothing is sent until
-  the flush, 26 events are one digest that counts them with the newest version
+  release and for an update, the body holding the schema and every event in
+  order, every key being present for every kind of event (including one with
+  no date, hash, notes or name), the version direction spelled out, a real
+  POST to a local server carrying a whole dig as one `application/json`
+  request, an error status being a delivery error, and an endpoint that never
+  answers timing out instead of holding up the dig.
+- **`delve-subscribers/subscriber-email`** batching: several events are one
+  message, 26 events are one digest that counts them with the newest version
   first, one event gets the ordinary message and none gets nothing, a burst
   past the cap is split into numbered messages that together hold every
-  event once, the cap is at least 1, `batch = false` sends as before,
-  a failed message doesn't stop the others and is reported, and the digest's
-  entries, grouping and one-line subject. `delve-cli`: a real dig with two
-  events sends one digest, `batch = false` sends two messages, and
-  `max_events_per_email = 1` sends two numbered ones.
+  event once, the cap is at least 1, `batch = false` sends one message per
+  event, a failed message doesn't stop the others and is reported (batched or
+  not), and the digest's entries, grouping and one-line subject. `delve-cli`:
+  a real dig with two events sends one digest, `batch = false` sends two
+  messages, and `max_events_per_email = 1` sends two numbered ones.
 - **`delve-subscribers/subscriber-email`**: the subject and body for each
   event kind (new, updated newer/older/unordered, same-version rebuild), a
   newline in vendor data not being able to add header lines, address and

@@ -64,6 +64,9 @@ async fn determine_run_kind(
 /// persist unconditionally, and — on incremental runs only — diff against
 /// the prior observation and publish events for anything new or changed.
 ///
+/// Events go to `bus`, which logs each one and holds it until the caller
+/// calls `EventBus::deliver` once the whole dig, across vendors, is over.
+///
 /// Baseline runs persist everything but never call `bus.publish` (see the
 /// README's "Baseline vs incremental digs" section) —
 /// this is what makes a vendor's first-ever dig silent. `mark_baseline_complete`
@@ -72,20 +75,6 @@ async fn determine_run_kind(
 /// baseline (see the correctness notes in the README's "Baseline vs
 /// incremental digs" section about partial-failure runs).
 pub async fn dig_vendor(
-    vendor: &dyn VendorPlugin,
-    ctx: &ScrapeContext,
-    store: &dyn MetadataStore,
-    bus: &EventBus,
-) -> Result<(), EngineError> {
-    let result = dig_vendor_run(vendor, ctx, store, bus).await;
-    // However the dig ended, subscribers holding events back (the email
-    // subscriber batches them) get to send what they have. Done out here
-    // because the body below returns early through `?` in several places.
-    bus.flush().await;
-    result
-}
-
-async fn dig_vendor_run(
     vendor: &dyn VendorPlugin,
     ctx: &ScrapeContext,
     store: &dyn MetadataStore,
@@ -190,8 +179,7 @@ async fn run_loop(
                         previous: old,
                         changed_fields,
                         version_direction: VersionDirection::Unordered,
-                    })
-                    .await;
+                    });
                 }
             }
             None => match latest_known_before_dig {
@@ -203,8 +191,7 @@ async fn run_loop(
                     bus.publish(FirmwareEvent::NewRelease {
                         firmware: fresh,
                         first_seen: chrono::Utc::now(),
-                    })
-                    .await;
+                    });
                 }
                 // A version we've never stored before has arrived, and we
                 // already knew some other version for this line before the
@@ -221,8 +208,7 @@ async fn run_loop(
                         previous: old,
                         changed_fields,
                         version_direction,
-                    })
-                    .await;
+                    });
                 }
             },
         }
@@ -468,8 +454,8 @@ mod tests {
             "test-collector"
         }
 
-        async fn notify(&self, event: &FirmwareEvent) -> Result<(), SubscriberError> {
-            self.events.lock().unwrap().push(event.clone());
+        async fn notify(&self, events: &[FirmwareEvent]) -> Result<(), SubscriberError> {
+            self.events.lock().unwrap().extend_from_slice(events);
             Ok(())
         }
     }
@@ -597,6 +583,7 @@ mod tests {
         let store = MockStore::default();
         let (bus, _events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         let all = store.all_current("mockvendor").await.unwrap();
         let entry_b = all
@@ -627,6 +614,7 @@ mod tests {
         dig_vendor(&plugin, &ctx(), &store, &bus)
             .await
             .expect("incremental dig should succeed");
+        bus.deliver().await;
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 1);
@@ -660,6 +648,7 @@ mod tests {
 
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         let events = events.lock().unwrap();
         assert_eq!(
@@ -708,6 +697,7 @@ mod tests {
 
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         let events = events.lock().unwrap();
         match &events[0] {
@@ -759,6 +749,7 @@ mod tests {
 
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         let events = events.lock().unwrap();
         match &events[0] {
@@ -834,6 +825,7 @@ mod tests {
         dig_vendor(&plugin_returning(vec![fresh]), &ctx(), &store, &bus)
             .await
             .unwrap();
+        bus.deliver().await;
         let events = events.lock().unwrap();
         events
             .iter()
@@ -945,6 +937,7 @@ mod tests {
             metadata("1.1.0", vec![1, 1, 0], 2), // new version: always reported
         ]);
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
         assert_eq!(describe(&events.lock().unwrap()), ["1.0.0 -> 1.1.0 Newer"]);
     }
 
@@ -963,6 +956,7 @@ mod tests {
             );
             let (bus, events) = bus_with_collector();
             dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+            bus.deliver().await;
 
             let expected: Vec<String> = order.iter().map(|v| format!("new {v}.0.0")).collect();
             assert_eq!(
@@ -986,6 +980,7 @@ mod tests {
         ]);
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         assert_eq!(
             describe(&events.lock().unwrap()),
@@ -1014,6 +1009,7 @@ mod tests {
         ]);
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         assert_eq!(
             describe(&events.lock().unwrap()),
@@ -1034,6 +1030,7 @@ mod tests {
         )
         .await
         .unwrap();
+        bus.deliver().await;
 
         let (bus, events) = bus_with_collector();
         dig_vendor(
@@ -1047,6 +1044,7 @@ mod tests {
         )
         .await
         .unwrap();
+        bus.deliver().await;
         assert_eq!(describe(&events.lock().unwrap()), ["1.0.0 -> 1.1.0 Newer"]);
     }
 
@@ -1078,6 +1076,7 @@ mod tests {
         dig_vendor(&plugin, &ctx(), &store, &bus)
             .await
             .expect("incremental dig should succeed");
+        bus.deliver().await;
 
         let events = events.lock().unwrap();
         assert_eq!(events.len(), 1);
@@ -1117,6 +1116,7 @@ mod tests {
 
         let (bus, events) = bus_with_collector();
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         assert!(
             events.lock().unwrap().is_empty(),
@@ -1153,6 +1153,7 @@ mod tests {
         let (bus, events) = bus_with_collector();
 
         let result = dig_vendor(&plugin, &ctx(), &store, &bus).await;
+        bus.deliver().await;
 
         assert!(
             result.is_err(),
@@ -1176,59 +1177,37 @@ mod tests {
         assert_eq!(store.all_current("mockvendor").await.unwrap().len(), 1);
     }
 
-    /// Records the order of `notify` and `flush` calls.
-    struct OrderRecorder(Arc<Mutex<Vec<&'static str>>>);
-
-    #[async_trait]
-    impl Subscriber for OrderRecorder {
-        fn id(&self) -> &'static str {
-            "test-order"
-        }
-
-        async fn notify(&self, _event: &FirmwareEvent) -> Result<(), SubscriberError> {
-            self.0.lock().unwrap().push("notify");
-            Ok(())
-        }
-
-        async fn flush(&self) -> Result<(), SubscriberError> {
-            self.0.lock().unwrap().push("flush");
-            Ok(())
-        }
-    }
-
     #[tokio::test]
-    async fn subscribers_are_flushed_once_after_the_last_event_of_a_dig() {
-        let store = MockStore::default();
-        store.mark_baseline_complete("mockvendor").await.unwrap(); // so events are published
-        let plugin = MockPlugin {
-            refs: vec![
-                firmware_ref("https://example.test/a"),
-                firmware_ref("https://example.test/b"),
-            ],
-            metadata_by_url: HashMap::from([
-                (
-                    "https://example.test/a".to_string(),
-                    Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
-                ),
-                (
-                    "https://example.test/b".to_string(),
-                    Ok(metadata("2.0.0", vec![2, 0, 0], 2)),
-                ),
+    async fn a_vendor_dig_publishes_to_the_bus_and_leaves_delivery_to_the_caller() {
+        let store = store_after_baseline(vec![]).await;
+        let (bus, events) = bus_with_collector();
+        dig_vendor(
+            &plugin_returning(vec![
+                metadata("1.0.0", vec![1, 0, 0], 1),
+                metadata("2.0.0", vec![2, 0, 0], 2),
             ]),
-        };
-        let order = Arc::new(Mutex::new(Vec::new()));
-        let bus = EventBus::new(vec![Box::new(OrderRecorder(order.clone()))]);
+            &ctx(),
+            &store,
+            &bus,
+        )
+        .await
+        .unwrap();
 
-        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
-
-        // Two releases, then exactly one flush, after both.
-        assert_eq!(*order.lock().unwrap(), ["notify", "notify", "flush"]);
+        assert!(
+            events.lock().unwrap().is_empty(),
+            "nothing is delivered by dig_vendor"
+        );
+        assert_eq!(bus.pending(), 2);
+        bus.deliver().await;
+        assert_eq!(
+            describe(&events.lock().unwrap()),
+            ["new 1.0.0", "new 2.0.0"]
+        );
     }
 
     #[tokio::test]
-    async fn subscribers_are_flushed_even_when_the_dig_fails_partway() {
-        // The first release is published, then the second fails to load: what
-        // a batching subscriber holds must still be sent.
+    async fn what_a_failed_dig_found_before_failing_is_still_delivered() {
+        // The first release is published, then the second fails to load.
         let store = MockStore::default();
         store.mark_baseline_complete("mockvendor").await.unwrap();
         let plugin = MockPlugin {
@@ -1247,31 +1226,30 @@ mod tests {
                 ),
             ]),
         };
-        let order = Arc::new(Mutex::new(Vec::new()));
-        let bus = EventBus::new(vec![Box::new(OrderRecorder(order.clone()))]);
+        let (bus, events) = bus_with_collector();
 
         let result = dig_vendor(&plugin, &ctx(), &store, &bus).await;
+        bus.deliver().await;
 
         assert!(result.is_err());
-        assert_eq!(*order.lock().unwrap(), ["notify", "flush"]);
+        assert_eq!(describe(&events.lock().unwrap()), ["new 1.0.0"]);
     }
 
     #[tokio::test]
-    async fn a_baseline_dig_publishes_nothing_but_still_flushes() {
+    async fn a_baseline_dig_leaves_nothing_to_deliver() {
         let store = MockStore::default();
-        let plugin = MockPlugin {
-            refs: vec![firmware_ref("https://example.test/a")],
-            metadata_by_url: HashMap::from([(
-                "https://example.test/a".to_string(),
-                Ok(metadata("1.0.0", vec![1, 0, 0], 1)),
-            )]),
-        };
-        let order = Arc::new(Mutex::new(Vec::new()));
-        let bus = EventBus::new(vec![Box::new(OrderRecorder(order.clone()))]);
-
-        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
-
-        assert_eq!(*order.lock().unwrap(), ["flush"]);
+        let (bus, events) = bus_with_collector();
+        dig_vendor(
+            &plugin_returning(vec![metadata("1.0.0", vec![1, 0, 0], 1)]),
+            &ctx(),
+            &store,
+            &bus,
+        )
+        .await
+        .unwrap();
+        assert_eq!(bus.pending(), 0);
+        bus.deliver().await;
+        assert!(events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1292,6 +1270,7 @@ mod tests {
         let (bus, events) = bus_with_collector();
 
         dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        bus.deliver().await;
 
         assert!(
             events.lock().unwrap().is_empty(),

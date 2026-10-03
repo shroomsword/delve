@@ -24,3 +24,4 @@ futures.workspace = true
 # RateLimiter tests to test real timing behavior without actually sleeping
 # in wall-clock time. Dev-only: production builds don't get this feature.
 tokio = { version = "1", features = ["test-util"] }
+tracing-subscriber.workspace = true
