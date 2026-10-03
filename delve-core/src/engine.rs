@@ -43,8 +43,8 @@ fn diff_fields(
     if old.sha256 != fresh.sha256 {
         diffs.push(FieldDiff {
             field: "sha256",
-            before: old.sha256.map(hex::encode).unwrap_or_default(),
-            after: fresh.sha256.map(hex::encode).unwrap_or_default(),
+            before: crate::events::sha256_hex(old.sha256),
+            after: crate::events::sha256_hex(fresh.sha256),
         });
     }
     diffs
@@ -175,23 +175,25 @@ async fn run_loop(
         }
 
         match exact_prior {
-            Some(old) if old.sha256 != fresh.sha256 => {
-                // Same version string, different bytes — a silent rebuild
-                // under an already-published version number. There's no
-                // meaningful version direction here (old.version.raw ==
-                // fresh.version.raw by construction, since exact_key was
-                // built from fresh's own version), so this always reports
-                // Unordered rather than a guessed direction.
-                let changed_fields = diff_fields(&old, &fresh);
-                bus.publish(FirmwareEvent::UpdatedRelease {
-                    firmware: fresh,
-                    previous: old,
-                    changed_fields,
-                    version_direction: VersionDirection::Unordered,
-                })
-                .await;
+            Some(old) => {
+                // This version is already stored. Whether a change to it is
+                // reported is the bus's change policy: by default only a new
+                // SHA-256, a silent rebuild under an already-published
+                // version number. There's no meaningful version direction
+                // here (old.version.raw == fresh.version.raw by construction,
+                // since exact_key was built from fresh's own version), so
+                // this always reports Unordered rather than a guessed one.
+                let changed_fields = bus.change_policy().changes(&old, &fresh);
+                if !changed_fields.is_empty() {
+                    bus.publish(FirmwareEvent::UpdatedRelease {
+                        firmware: fresh,
+                        previous: old,
+                        changed_fields,
+                        version_direction: VersionDirection::Unordered,
+                    })
+                    .await;
+                }
             }
-            Some(_) => {} // exact same version and hash already known — no event
             None => match latest_known_before_dig {
                 // Nothing was known for this vendor/device_family/hardware
                 // line before this dig, so every release of it is new to
@@ -227,14 +229,6 @@ async fn run_loop(
     }
 
     Ok(())
-}
-
-// Minimal hex encoding so this module doesn't need an extra crate dependency
-// just for displaying a sha256 in a diff.
-mod hex {
-    pub fn encode(bytes: [u8; 32]) -> String {
-        bytes.iter().map(|b| format!("{:02x}", b)).collect()
-    }
 }
 
 #[cfg(test)]
@@ -824,6 +818,134 @@ mod tests {
                 ),
             })
             .collect()
+    }
+
+    /// Digs `fresh` (one release) over a store already holding `known`,
+    /// with `policy`, and returns each event's changed field names.
+    async fn changed_fields_reported(
+        policy: crate::events::ChangePolicy,
+        known: FirmwareMetadata,
+        fresh: FirmwareMetadata,
+    ) -> Vec<Vec<&'static str>> {
+        let store = store_after_baseline(vec![known]).await;
+        let collector = CollectingSubscriber::default();
+        let events = collector.events.clone();
+        let bus = EventBus::new(vec![Box::new(collector)]).with_change_policy(policy);
+        dig_vendor(&plugin_returning(vec![fresh]), &ctx(), &store, &bus)
+            .await
+            .unwrap();
+        let events = events.lock().unwrap();
+        events
+            .iter()
+            .map(|e| match e {
+                FirmwareEvent::UpdatedRelease {
+                    changed_fields,
+                    version_direction,
+                    ..
+                } => {
+                    assert_eq!(*version_direction, VersionDirection::Unordered);
+                    changed_fields.iter().map(|d| d.field).collect()
+                }
+                other => panic!("expected UpdatedRelease, got {other:?}"),
+            })
+            .collect()
+    }
+
+    fn with_notes(mut m: FirmwareMetadata, url: &str) -> FirmwareMetadata {
+        m.release_notes_url = Some(url.parse().unwrap());
+        m
+    }
+
+    #[tokio::test]
+    async fn by_default_only_a_new_hash_under_the_same_version_is_reported() {
+        use crate::events::ChangePolicy;
+        let known = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 1),
+            "https://example.test/a",
+        );
+
+        let notes_only = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 1),
+            "https://example.test/b",
+        );
+        assert!(
+            changed_fields_reported(ChangePolicy::default(), known.clone(), notes_only)
+                .await
+                .is_empty()
+        );
+
+        let rebuilt = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 2),
+            "https://example.test/b",
+        );
+        // Only the watched field is listed, though the notes changed too.
+        assert_eq!(
+            changed_fields_reported(ChangePolicy::default(), known, rebuilt).await,
+            [["sha256"]]
+        );
+    }
+
+    #[tokio::test]
+    async fn watched_fields_are_reported_and_unwatched_ones_are_not() {
+        use crate::events::{ChangePolicy, WatchedField};
+        let known = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 1),
+            "https://example.test/a",
+        );
+        let notes_policy = || ChangePolicy::new([WatchedField::ReleaseNotesUrl]);
+
+        let notes_only = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 1),
+            "https://example.test/b",
+        );
+        assert_eq!(
+            changed_fields_reported(notes_policy(), known.clone(), notes_only).await,
+            [["release_notes_url"]]
+        );
+
+        // A new hash isn't reported when sha256 isn't watched.
+        let rebuilt = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 2),
+            "https://example.test/a",
+        );
+        assert!(
+            changed_fields_reported(notes_policy(), known.clone(), rebuilt)
+                .await
+                .is_empty()
+        );
+
+        // Several watched fields changing make one event listing each, in
+        // the order they are watched.
+        let mut both = with_notes(
+            metadata("1.0.0", vec![1, 0, 0], 2),
+            "https://example.test/b",
+        );
+        both.release_date = chrono::NaiveDate::from_ymd_opt(2026, 1, 2);
+        let policy = ChangePolicy::new([
+            WatchedField::ReleaseDate,
+            WatchedField::Sha256,
+            WatchedField::ReleaseNotesUrl,
+        ]);
+        assert_eq!(
+            changed_fields_reported(policy, known, both).await,
+            [["release_date", "sha256", "release_notes_url"]]
+        );
+    }
+
+    #[tokio::test]
+    async fn watching_nothing_still_reports_new_versions() {
+        use crate::events::ChangePolicy;
+        let store = store_after_baseline(vec![metadata("1.0.0", vec![1, 0, 0], 1)]).await;
+        let collector = CollectingSubscriber::default();
+        let events = collector.events.clone();
+        let bus =
+            EventBus::new(vec![Box::new(collector)]).with_change_policy(ChangePolicy::new([]));
+        let plugin = plugin_returning(vec![
+            metadata("1.0.0", vec![1, 0, 0], 9), // rebuilt: not watched
+            metadata("1.1.0", vec![1, 1, 0], 2), // new version: always reported
+        ]);
+        dig_vendor(&plugin, &ctx(), &store, &bus).await.unwrap();
+        assert_eq!(describe(&events.lock().unwrap()), ["1.0.0 -> 1.1.0 Newer"]);
     }
 
     #[tokio::test]

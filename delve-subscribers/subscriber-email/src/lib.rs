@@ -282,11 +282,26 @@ fn render(event: &FirmwareEvent) -> (String, String) {
             version_direction,
         } => {
             let same_version = previous.version.raw == firmware.version.raw;
-            let subject = if same_version {
+            // Under the same version, a new hash is a rebuild; anything else
+            // is a change to the entry's details, which `[notifications]
+            // changed_fields` can ask to hear about.
+            let rebuilt = changed_fields.iter().any(|d| d.field == "sha256");
+            let subject = if same_version && rebuilt {
                 format!(
                     "[delve] Firmware rebuilt under the same version: {} {}",
                     device_label(firmware),
                     firmware.version.raw
+                )
+            } else if same_version {
+                format!(
+                    "[delve] Firmware details changed: {} {} ({})",
+                    device_label(firmware),
+                    firmware.version.raw,
+                    changed_fields
+                        .iter()
+                        .map(|d| d.field)
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 )
             } else {
                 let what = match version_direction {
@@ -546,6 +561,42 @@ mod tests {
             subject,
             "[delve] Firmware rebuilt under the same version: acme widget (rev-a+rev-b) 1.0"
         );
+    }
+
+    /// An update under the same version where only the release notes link
+    /// changed, as reported when `release_notes_url` is watched.
+    fn notes_changed() -> FirmwareEvent {
+        FirmwareEvent::UpdatedRelease {
+            firmware: firmware("1.0", 1),
+            previous: firmware("1.0", 1),
+            changed_fields: vec![FieldDiff {
+                field: "release_notes_url",
+                before: "https://example.test/old".into(),
+                after: "https://example.test/new".into(),
+            }],
+            version_direction: VersionDirection::Unordered,
+        }
+    }
+
+    #[test]
+    fn a_details_change_without_a_new_hash_is_not_called_a_rebuild() {
+        let (subject, body) = render(&notes_changed());
+        assert_eq!(
+            subject,
+            "[delve] Firmware details changed: acme widget (rev-a+rev-b) 1.0 (release_notes_url)"
+        );
+        assert!(
+            body.contains(
+                "  release_notes_url: https://example.test/old -> https://example.test/new\n"
+            ),
+            "{body}"
+        );
+
+        let events = digest::sorted(vec![notes_changed(), release(2)]);
+        let (_, body) = digest::render_digest(&events, None);
+        assert!(body.contains("  changed    1.0\n"), "{body}");
+        assert!(body.contains("changed release_notes_url\n"), "{body}");
+        assert!(!body.contains("rebuilt"), "{body}");
     }
 
     #[test]

@@ -99,7 +99,14 @@ fn entry(event: &FirmwareEvent) -> String {
                 .find(|d| d.field == "sha256")
                 .map(|d| short(&d.before));
             if previous.version.raw == fw.version.raw {
-                ("rebuilt", fw.version.raw.clone(), old_sha)
+                // A new hash is a rebuild; any other watched field is a change
+                // to the entry's details, listed below.
+                let label = if old_sha.is_some() {
+                    "rebuilt"
+                } else {
+                    "changed"
+                };
+                (label, fw.version.raw.clone(), old_sha)
             } else {
                 let label = match version_direction {
                     VersionDirection::Newer => "updated",
@@ -131,6 +138,16 @@ fn entry(event: &FirmwareEvent) -> String {
     }
     if !details.is_empty() {
         out.push_str(&format!("{indent}{}\n", details.join(", ")));
+    }
+    if let FirmwareEvent::UpdatedRelease { changed_fields, .. } = event {
+        let others: Vec<&str> = changed_fields
+            .iter()
+            .map(|d| d.field)
+            .filter(|f| !matches!(*f, "sha256" | "version"))
+            .collect();
+        if !others.is_empty() {
+            out.push_str(&format!("{indent}changed {}\n", others.join(", ")));
+        }
     }
     if let Some(url) = &fw.release_notes_url {
         out.push_str(&format!("{indent}notes {url}\n"));

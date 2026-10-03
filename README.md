@@ -696,10 +696,47 @@ pub enum FirmwareEvent {
   channel that doesn't publish monotonically. See
   [Baseline vs incremental digs](#baseline-vs-incremental-digs) for how
   this is actually computed (and a bug that once made it dead code).
-- What counts as "changed" (hash/version only, vs. also release notes or
-  hardware-target list) is currently hardcoded to hash-or-version, since
-  that's what's unambiguously notification-worthy by default; widening
-  this to a config knob is a reasonable future addition, not yet built.
+- **What counts as "changed"** is set by `[notifications] changed_fields`
+  (see [Choosing what counts as a change](#choosing-what-counts-as-a-change)).
+  A new version is always reported; the setting decides which changes to a
+  version already stored are reported as well, and by default that is only
+  a new SHA-256.
+
+### Choosing what counts as a change
+
+A new version of a device's firmware is always reported, as a
+`NewRelease` or an `UpdatedRelease` from the previous version. A version
+delve has already stored can also change: the vendor rebuilds it (a new
+hash), or edits its release date or notes link. By default only a new hash
+is reported, since that's unambiguously worth knowing. To hear about the
+others too, list the fields to watch:
+
+```toml
+[notifications]
+changed_fields = ["sha256", "release_notes_url", "release_date"]
+```
+
+| Field | Changes when |
+|---|---|
+| `sha256` (the default) | the vendor rebuilds a published version, a different file under the same version number |
+| `release_date` | the vendor changes a version's release date |
+| `release_notes_url` | a version gains, loses or moves its release notes link |
+| `signature` | a version's signature details change (no plugin reports signatures yet) |
+| `source_url` | the vendor moves a version's record to another URL |
+
+- Each change is one `UpdatedRelease` with the version unchanged,
+  `version_direction` `unordered`, and `changed_fields` listing only the
+  watched fields that changed, in the order they are listed.
+- A new hash is called a rebuild in email; any other change is "Firmware
+  details changed", naming the fields.
+- `changed_fields = []` reports new versions only, not even rebuilds.
+- `version` and `hardware_targets` can't be listed: they are part of an
+  entry's identity, so a change to either makes a different entry, which is
+  always reported. `display_name` can't be listed either, since it is
+  display text and never compared. Any of these, or an unknown name, fails
+  the dig at startup with the reason.
+- Whatever is watched, every observation is stored, so `provenance` shows
+  each change.
 
 
 ### Webhook
@@ -816,7 +853,9 @@ max_events_per_email = 50               # with batch, the most events in one mes
     The body groups them by device, newest version first, and for each says
     whether it is `new`, `updated`, `DOWNGRADED`, `changed` or `rebuilt`, with
     the versions, the release date, a short hash (and the old one for a
-    change), and the release-notes and source links.
+    change), any other watched fields that changed (see [Choosing what counts
+    as a change](#choosing-what-counts-as-a-change)), and the release-notes and
+    source links.
   - **A big burst is split**: no message holds more than `max_events_per_email`
     events (50 unless you set it), and the rest go in further messages
     numbered `(part 1 of 3)`. Every message is tried even if an earlier one
@@ -998,6 +1037,9 @@ client_secret = "env:CISCO_CLIENT_SECRET"
 [vendors.settings.unifi]                        # non-secret, per-plugin settings
 models = ["U7PG2", "USMINI"]                    # see "Tracking only some models"
 products = ["unifi-firmware", "unifi-dream"]    # see "Tracking console products"
+
+[notifications]
+changed_fields = ["sha256"]                     # the default; see "Choosing what counts as a change"
 
 [transport]
 default = "direct"                              # "direct" | "tor" | { socks5 = { addr = "..." } }
@@ -1411,7 +1453,10 @@ exists because of it, not as a design decision made up front.
   each release with what was known before the dig (a line first seen
   after the baseline is all `NewRelease` in any order; a known line's new
   versions are each compared with the pre-dig latest; lines don't affect
-  each other; and the next dig sees what this one stored), and that
+  each other; and the next dig sees what this one stored), the change
+  policy (only a new hash by default; watched fields reported, unwatched ones
+  not, several in one event in the order listed; watching nothing still
+  reports new versions), and that
   `source_url` gets populated from the discovering `FirmwareRef` rather
   than whatever the plugin's `metadata()` response happened to contain.
 - **`delve-store-sqlite/src/lib.rs`**: real SQLite-backed tests (in-memory
