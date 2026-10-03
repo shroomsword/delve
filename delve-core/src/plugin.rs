@@ -34,6 +34,14 @@ pub enum PluginError {
 /// bytes — see the README's "Storage" section ("Binaries are never stored
 /// automatically") for why there's deliberately no `ArtifactStore`.
 pub trait ArtifactSink: Send {
+    /// Offers the vendor's own name for the file being downloaded, such as
+    /// the last segment of its download URL. A plugin calls this once, before
+    /// the first `write_chunk`, and only when it has a name it knows is the
+    /// file's own (a URL like `.../download?id=7` has none). A sink may use it
+    /// to name the file, and may ignore it, or reject it if it isn't a plain
+    /// file name. The default ignores it.
+    fn suggest_file_name(&mut self, _name: &str) {}
+
     fn write_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()>;
     fn finish(&mut self) -> std::io::Result<()>;
 }

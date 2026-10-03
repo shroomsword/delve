@@ -246,6 +246,11 @@ impl VendorPlugin for UnifiPlugin {
             ))
         })?;
 
+        // Name the file after the one in the download URL, when it has one.
+        if let Some(name) = api::download_file_name(&data_url.href) {
+            sink.suggest_file_name(&name);
+        }
+
         ctx.throttle().await;
         let mut response = ctx
             .http_client()
@@ -514,6 +519,87 @@ mod tests {
         fn finish(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    /// A sink that records the file name suggested to it and the bytes.
+    #[derive(Default)]
+    struct NamingSink {
+        suggested: Vec<String>,
+        bytes: Vec<u8>,
+    }
+
+    impl ArtifactSink for NamingSink {
+        fn suggest_file_name(&mut self, name: &str) {
+            assert!(self.bytes.is_empty(), "suggested after the first byte");
+            self.suggested.push(name.to_string());
+        }
+        fn write_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
+            self.bytes.extend_from_slice(chunk);
+            Ok(())
+        }
+        fn finish(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Fetches one record whose download link is `data_path` on a local
+    /// server, and returns what the sink was told and given.
+    async fn fetch_from_mock(data_path: &'static str) -> NamingSink {
+        const IMAGE: &[u8] = b"firmware image bytes";
+        // The record's links must point back at this server, whose address
+        // is only known once it has started and before the first request.
+        let base = std::sync::Arc::new(std::sync::OnceLock::<url::Url>::new());
+        let handler_base = base.clone();
+        let server = MockServer::start(move |request| {
+            let base = handler_base
+                .get()
+                .expect("server URL is set before any request");
+            if request.target().starts_with("/api/firmware/rec") {
+                let record = serde_json::json!({
+                    "id": "rec", "product": "unifi-firmware", "channel": "release",
+                    "platform": "USMINI", "version": "v1.6.3+574",
+                    "version_major": 1, "version_minor": 6, "version_patch": 3,
+                    "version_build": "574", "created": "2024-01-01T00:00:00Z",
+                    "file_size": IMAGE.len(),
+                    "_links": {
+                        "self": {"href": base.join("/api/firmware/rec").unwrap()},
+                        "data": {"href": base.join(data_path).unwrap()}
+                    }
+                });
+                Response::json(record.to_string())
+            } else {
+                Response {
+                    status: 200,
+                    content_type: "application/octet-stream".into(),
+                    body: IMAGE.to_vec(),
+                }
+            }
+        });
+        base.set(server.url()).unwrap();
+        let plugin = UnifiPlugin::new();
+        let fref = FirmwareRef {
+            vendor: "unifi".to_string(),
+            device_family: "USW".to_string(),
+            source_url: server.url().join("/api/firmware/rec").unwrap(),
+            discovered_at: chrono::Utc::now(),
+        };
+        let ctx = ctx_with_models(None);
+        let mut sink = NamingSink::default();
+        plugin.fetch(&ctx, &fref, &mut sink).await.unwrap();
+        assert_eq!(sink.bytes, IMAGE);
+        sink
+    }
+
+    #[tokio::test]
+    async fn fetch_suggests_the_file_name_from_the_download_url() {
+        let sink = fetch_from_mock("/data/unifi-firmware/259f-USMINI-1.6.3-rec.bin").await;
+        assert_eq!(sink.suggested, ["259f-USMINI-1.6.3-rec.bin"]);
+    }
+
+    #[tokio::test]
+    async fn fetch_suggests_nothing_when_the_url_has_no_file_name() {
+        let sink = fetch_from_mock("/data/abc123").await;
+        assert!(sink.suggested.is_empty(), "{:?}", sink.suggested);
     }
 
     #[tokio::test]

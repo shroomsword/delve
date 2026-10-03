@@ -16,30 +16,97 @@ use crate::config::Config;
 /// post-download sha256 check (see the README's "CLI commands" section's
 /// default-verify behavior) doesn't
 /// need a second read pass over the file.
+///
+/// Either a file path, opened at once, or a directory, in which the file is
+/// opened on its first write (or on `finish`, for an empty download) so the
+/// plugin can first suggest a name for it with `suggest_file_name`.
 struct FileSink {
-    file: std::fs::File,
+    file: Option<std::fs::File>,
+    /// The file's path once it is open.
+    path: Option<PathBuf>,
+    /// For a directory target: the directory, the name used when the plugin
+    /// suggests none that is usable, and the plugin's suggestion.
+    directory: Option<DirectoryTarget>,
     hasher: Sha256,
 }
 
+struct DirectoryTarget {
+    dir: PathBuf,
+    fallback_name: String,
+    suggested_name: Option<String>,
+}
+
 impl ArtifactSink for FileSink {
+    fn suggest_file_name(&mut self, name: &str) {
+        if let Some(directory) = &mut self.directory {
+            if is_plain_file_name(name) {
+                directory.suggested_name = Some(name.to_string());
+            }
+        }
+    }
+
     fn write_chunk(&mut self, chunk: &[u8]) -> std::io::Result<()> {
         use std::io::Write;
         self.hasher.update(chunk);
-        self.file.write_all(chunk)
+        self.open()?.write_all(chunk)
     }
 
     fn finish(&mut self) -> std::io::Result<()> {
         use std::io::Write;
-        self.file.flush()
+        self.open()?.flush()
     }
 }
 
 impl FileSink {
+    /// A sink writing to the file at `path`, created at once.
     fn create(path: &std::path::Path) -> std::io::Result<Self> {
         Ok(Self {
-            file: std::fs::File::create(path)?,
+            file: Some(std::fs::File::create(path)?),
+            path: Some(path.to_path_buf()),
+            directory: None,
             hasher: Sha256::new(),
         })
+    }
+
+    /// A sink writing a file inside `dir`, which is created if needed. The
+    /// file is named by the plugin's suggestion if it makes a usable one,
+    /// otherwise `fallback_name`.
+    fn in_directory(dir: PathBuf, fallback_name: String) -> Self {
+        Self {
+            file: None,
+            path: None,
+            directory: Some(DirectoryTarget {
+                dir,
+                fallback_name,
+                suggested_name: None,
+            }),
+            hasher: Sha256::new(),
+        }
+    }
+
+    /// The open file, creating the directory and the file first if this is
+    /// the first call for a directory target.
+    fn open(&mut self) -> std::io::Result<&mut std::fs::File> {
+        if self.file.is_none() {
+            if let Some(directory) = &self.directory {
+                std::fs::create_dir_all(&directory.dir)?;
+                let name = directory
+                    .suggested_name
+                    .as_deref()
+                    .unwrap_or(&directory.fallback_name);
+                let path = directory.dir.join(name);
+                self.file = Some(std::fs::File::create(&path)?);
+                self.path = Some(path);
+            }
+        }
+        self.file
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("no output file"))
+    }
+
+    /// Where the file was written, once it is open.
+    fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
     }
 
     /// Consumes the sink's hasher to produce the final digest. Takes `self`
@@ -56,29 +123,42 @@ impl FileSink {
     }
 }
 
-/// Where to write the download. A path that is an existing directory, or
-/// that ends in a path separator, names a directory: it is created if needed
-/// and the file inside it is named after the entry, since the plugin's
-/// `fetch` doesn't report the vendor's own file name. Any other path is the
-/// file itself.
-fn output_path(out: &std::path::Path, entry: &delve_core::model::FirmwareMetadata) -> PathBuf {
-    let text = out.as_os_str().to_string_lossy();
-    let names_a_directory = out.is_dir()
-        || text
+/// Whether a plugin's suggested name is safe to use as a file name inside
+/// the output directory: not empty, not `.` or `..`, and no path separator
+/// or control character that could place the file somewhere else.
+fn is_plain_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name
+            .chars()
+            .any(|c| std::path::is_separator(c) || c.is_control())
+}
+
+/// Whether `--out` names a directory: an existing directory, or a path
+/// ending in a path separator (which is created if needed). Any other path
+/// is the file itself.
+fn names_a_directory(out: &std::path::Path) -> bool {
+    out.is_dir()
+        || out
+            .as_os_str()
+            .to_string_lossy()
             .chars()
             .next_back()
-            .is_some_and(std::path::is_separator);
-    if !names_a_directory {
-        return out.to_path_buf();
-    }
+            .is_some_and(std::path::is_separator)
+}
+
+/// The file name used in a directory when the plugin suggests none:
+/// `<vendor>-<hardware>-<version>.bin`, with anything that isn't safe in a
+/// file name, such as the `+` in UniFi versions, replaced by `_`.
+fn fallback_file_name(entry: &delve_core::model::FirmwareMetadata) -> String {
     let raw = format!(
         "{}-{}-{}.bin",
         entry.vendor,
         entry.hardware_targets.join("+"),
         entry.version.raw
     );
-    let name: String = raw
-        .chars()
+    raw.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
                 c
@@ -86,8 +166,7 @@ fn output_path(out: &std::path::Path, entry: &delve_core::model::FirmwareMetadat
                 '_'
             }
         })
-        .collect();
-    out.join(name)
+        .collect()
 }
 
 pub async fn run(
@@ -142,14 +221,18 @@ pub async fn run(
         discovered_at: chrono::Utc::now(),
     };
 
-    let out = output_path(&out, &entry);
-    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)?;
-    }
-    let mut sink = FileSink::create(&out)?;
+    let mut sink = if names_a_directory(&out) {
+        FileSink::in_directory(out, fallback_file_name(&entry))
+    } else {
+        FileSink::create(&out)?
+    };
 
     plugin.fetch(&ctx, &source_ref, &mut sink).await?;
     sink.finish()?;
+    let written = sink
+        .path()
+        .ok_or_else(|| anyhow::anyhow!("the download produced no output file"))?
+        .to_path_buf();
 
     if !no_verify {
         let computed = sink.finalize_sha256();
@@ -166,7 +249,7 @@ pub async fn run(
         "Unearthed {} {} to {}",
         vendor_id,
         entry.version.raw,
-        out.display()
+        written.display()
     );
     Ok(())
 }
@@ -220,39 +303,89 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_file_path_is_used_as_it_is() {
-        let e = entry("unifi", &["USMINI"], "v1.6.3+574");
-        let path = std::path::Path::new("some/dir/mini.bin");
-        assert_eq!(output_path(path, &e), path);
+    fn temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("delve-test-out-{}", uuid::Uuid::new_v4()))
     }
 
     #[test]
-    fn an_existing_directory_gets_a_file_named_after_the_entry() {
-        let dir = std::env::temp_dir().join(format!("delve-test-out-{}", uuid::Uuid::new_v4()));
+    fn a_file_path_is_not_a_directory_and_an_existing_directory_or_trailing_separator_is() {
+        assert!(!names_a_directory(std::path::Path::new(
+            "some/dir/mini.bin"
+        )));
+        assert!(names_a_directory(std::path::Path::new("./downloads/")));
+        let dir = temp_dir();
         std::fs::create_dir(&dir).unwrap();
-        let e = entry("unifi", &["USMINI"], "v1.6.3+574");
-        // `+` is not safe in every file system's names, so it is replaced.
-        assert_eq!(
-            output_path(&dir, &e),
-            dir.join("unifi-USMINI-v1.6.3_574.bin")
-        );
+        assert!(names_a_directory(&dir));
         let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]
-    fn a_path_ending_in_a_separator_names_a_directory_even_if_it_does_not_exist() {
-        let e = entry("cisco", &["isr4000"], "17.9.4a");
-        let out = output_path(std::path::Path::new("./downloads/"), &e);
-        assert_eq!(out.file_name().unwrap(), "cisco-isr4000-17.9.4a.bin");
-        assert_eq!(out.parent().unwrap(), std::path::Path::new("./downloads"));
+    fn the_fallback_name_is_safe_for_odd_versions_and_several_targets() {
+        let e = entry("unifi", &["USMINI"], "v1.6.3+574");
+        // `+` is not safe in every file system's names, so it is replaced.
+        assert_eq!(fallback_file_name(&e), "unifi-USMINI-v1.6.3_574.bin");
+        let e = entry("v/x", &["A", "B"], "1 2/3");
+        assert_eq!(fallback_file_name(&e), "v_x-A_B-1_2_3.bin");
     }
 
     #[test]
-    fn several_hardware_targets_and_odd_characters_make_a_safe_name() {
-        let e = entry("v/x", &["A", "B"], "1 2/3");
-        let out = output_path(std::path::Path::new("d/"), &e);
-        assert_eq!(out.file_name().unwrap(), "v_x-A_B-1_2_3.bin");
+    fn a_suggested_name_is_used_inside_a_directory_that_is_created() {
+        let dir = temp_dir().join("nested");
+        let mut sink = FileSink::in_directory(dir.clone(), "fallback.bin".into());
+        sink.suggest_file_name("U7PG2-6.8.2.bin");
+        sink.write_chunk(b"abc").unwrap();
+        sink.finish().unwrap();
+
+        assert_eq!(sink.path(), Some(dir.join("U7PG2-6.8.2.bin").as_path()));
+        assert_eq!(std::fs::read(dir.join("U7PG2-6.8.2.bin")).unwrap(), b"abc");
+        assert!(!dir.join("fallback.bin").exists());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn no_suggestion_uses_the_fallback_name() {
+        let dir = temp_dir();
+        let mut sink = FileSink::in_directory(dir.clone(), "fallback.bin".into());
+        sink.write_chunk(b"abc").unwrap();
+        sink.finish().unwrap();
+        assert_eq!(sink.path(), Some(dir.join("fallback.bin").as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unsafe_suggestion_is_ignored() {
+        for name in ["", ".", "..", "../x.bin", "a/b.bin", "a\\b.bin", "a\nb.bin"] {
+            let dir = temp_dir();
+            let mut sink = FileSink::in_directory(dir.clone(), "fallback.bin".into());
+            sink.suggest_file_name(name);
+            sink.write_chunk(b"x").unwrap();
+            // Separators differ by platform; `\` is only one on Windows.
+            let used = sink.path().unwrap().to_path_buf();
+            assert_eq!(used.parent().unwrap(), dir, "{name:?} escaped to {used:?}");
+            if name != "a\\b.bin" {
+                assert_eq!(used, dir.join("fallback.bin"), "{name:?}");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn a_suggestion_does_not_rename_a_file_path_target() {
+        let path = temp_dir().with_extension("bin");
+        let mut sink = FileSink::create(&path).unwrap();
+        sink.suggest_file_name("other.bin");
+        sink.write_chunk(b"abc").unwrap();
+        assert_eq!(sink.path(), Some(path.as_path()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_empty_download_into_a_directory_still_creates_the_file() {
+        let dir = temp_dir();
+        let mut sink = FileSink::in_directory(dir.clone(), "empty.bin".into());
+        sink.finish().unwrap();
+        assert_eq!(std::fs::read(dir.join("empty.bin")).unwrap(), b"");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
