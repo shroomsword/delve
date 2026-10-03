@@ -350,10 +350,34 @@ plugin discovers:
      before" — catches a vendor silently rebuilding an already-published
      version number under the same version string but a different hash.
    - `latest_known(vendor, device_family, hardware_targets)` — "what
-     version did we know about for this line *before* this observation,"
+     version did we know about for this line *before this dig*,"
      independent of whatever version just arrived — this is what actually
      detects an ordinary version bump and lets `VersionDirection` report a
      real `Newer`/`Older` instead of always `Unordered`.
+
+   **Every release is compared with what was known before the dig**, not
+   with releases stored earlier in the same dig. The engine asks
+   `latest_known` once per line, the first time the line comes up and so
+   before the dig stores anything for it, and reuses that answer for the
+   line's other releases. So:
+   - A line with nothing known before the dig — a model added to
+     `models`, a newly enabled product, a device the vendor just started
+     listing — reports **every** release as a `NewRelease`, whatever order
+     the vendor's API lists them in.
+   - A known line that gains several versions in one dig reports each as an
+     `UpdatedRelease` from the newest version known before the dig, such as
+     `2.0.0 -> 3.0.0` and `2.0.0 -> 2.5.0`, not `3.0.0 -> 2.5.0` labelled a
+     downgrade. `Older` means the vendor published a version below the newest
+     one delve already knew.
+
+   An earlier version compared with the store's running state instead, so
+   a line delve had never seen read as one new release and a string of
+   updates and "downgrades": enabling the UniFi console products on an
+   existing database reported 31 new releases and 576 updates, many of them
+   `Older`. The same dig now reports 482 new releases and 125 updates, all
+   but one of them `Newer` (the 125 are console firmware for the Dream
+   Machines, Express and Cloud Keys, whose older firmware delve already
+   knew from `unifi-firmware`).
 
    These are genuinely different questions, and an earlier version of this
    engine used only the first one, which meant a version bump (which by
@@ -1218,12 +1242,13 @@ isn't listed fails the dig and says so, instead of tracking nothing.
 list responses. Each shows up once, as a new release, whenever it first
 appears, and is stored from then on, so it doesn't repeat.
 
-**Adding a product to an existing database** makes its whole history look
-new: in a test (October 2026), enabling the other four products on a
-`unifi-firmware` database announced 607 releases (31 new, 576 updated).
+**Adding a product to an existing database** announces its whole history:
+in a test (October 2026), enabling the other four products on a
+`unifi-firmware` database announced 607 releases. 482 were new releases for
+models delve hadn't seen, and 125 were updates for the Dream Machines,
+Express and Cloud Keys, whose older firmware `unifi-firmware` already had.
 Run `delve dig --vendor unifi --redig` once after changing `products` to store
-them silently; as with `models`, that dig is silent for every model. This is
-the history problem reported in #46, not specific to UniFi.
+them silently; as with `models`, that dig is silent for every model.
 
 ### Requests per dig
 
@@ -1256,7 +1281,8 @@ nothing.
 
 **Changing the list changes what a dig sees:**
 - **Adding a model** after the first dig makes its whole release history
-  look new, so the next dig notifies about every version it has ever had.
+  look new, so the next dig notifies about every version it has ever had,
+  each as a new release.
   Run `delve dig --vendor unifi --redig` once after adding models to store
   them silently instead. That dig is silent for every model, so it also
   won't notify about a genuine new release that happens to land in it.
@@ -1381,7 +1407,11 @@ exists because of it, not as a design decision made up front.
   against mock `VendorPlugin`/`MetadataStore`/`Subscriber`
   implementations — baseline silence, `NewRelease`/`UpdatedRelease`/
   no-event cases, `--redig`, the partial-failure correctness note (a dig
-  that dies mid-scrape must not mark the baseline complete), and that
+  that dies mid-scrape must not mark the baseline complete), comparing
+  each release with what was known before the dig (a line first seen
+  after the baseline is all `NewRelease` in any order; a known line's new
+  versions are each compared with the pre-dig latest; lines don't affect
+  each other; and the next dig sees what this one stored), and that
   `source_url` gets populated from the discovering `FirmwareRef` rather
   than whatever the plugin's `metadata()` response happened to contain.
 - **`delve-store-sqlite/src/lib.rs`**: real SQLite-backed tests (in-memory
