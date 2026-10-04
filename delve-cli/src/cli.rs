@@ -65,6 +65,20 @@ pub enum Command {
         selector: SelectorArgs,
     },
 
+    /// Ask questions and write the config file, starting from the current one
+    /// when there is one — see the README's "Creating the config file".
+    /// Needs a terminal, unless `--defaults` is given.
+    #[command(alias = "init", alias = "configure")]
+    Survey {
+        /// Write the file to stdout instead of to the config path.
+        #[arg(long)]
+        print: bool,
+
+        /// Ask nothing: write the commented file with every default.
+        #[arg(long)]
+        defaults: bool,
+    },
+
     /// Download a firmware binary. Never happens automatically during
     /// `dig` — this is the only command that touches binary bytes (see the
     /// README's "CLI commands" section).

@@ -1,0 +1,54 @@
+# delve configuration, written by `delve survey`. Edit it freely, or run
+# `delve survey` again to change it. The README's "Configuration reference"
+# describes every setting.
+
+# Where delve keeps what it has found.
+database_path = "/srv/delve/delve.sqlite"
+
+[vendors]
+# Which compiled-in vendors `dig` runs. An empty list runs all of them.
+enabled = ["cisco", "unifi"]
+
+[vendors.settings.unifi]
+# Only these model codes, one request each (README: "Tracking only some models").
+# Leave it out to track every model in one request per product.
+models = ["US8", "USMINI"]
+# Which Ubiquiti products to track (README: "Tracking console products").
+products = ["unifi-firmware", "unifi-dream"]
+
+[vendors.credentials.cisco]
+# "env:NAME" reads the value from the environment variable NAME when delve
+# runs, so no secret is stored in this file.
+client_id = "env:CISCO_CLIENT_ID"
+client_secret = "env:CISCO_CLIENT_SECRET"
+
+[transport]
+# How delve reaches vendor sites: "direct", "tor" (a Tor daemon on
+# 127.0.0.1:9050), or { socks5 = { addr = "host:port" } }.
+default = "tor"
+# Identifies delve to vendor sites. Include a way to reach you, so a vendor
+# can ask before blocking you.
+user_agent = "delve/0.1.0 (contact: https://example.test/contact)"
+# Seconds one request, and one connection, may take.
+# request_timeout_secs = 30
+# connect_timeout_secs = 10
+# The fewest milliseconds between two requests to one vendor.
+min_request_interval_ms = 2000
+
+[transport.overrides]
+# A different transport for these vendors.
+cisco = "direct"
+
+[transport.rate_limit_overrides]
+# A different min_request_interval_ms for these vendors.
+cisco = 5000
+
+[notifications]
+# New versions are always reported. These are the changes to a version
+# already stored that are reported too: sha256, release_date,
+# release_notes_url, signature, source_url.
+changed_fields = ["sha256", "release_notes_url"]
+
+[subscribers.webhook]
+# One JSON POST per dig; the README's "Webhook" section has the payload.
+url = "https://hooks.example.test/delve"

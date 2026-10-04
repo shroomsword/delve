@@ -66,7 +66,7 @@ pub async fn run(
 /// front on a bad address or an unset `env:` variable, rather than running
 /// without the notifications it was asked for.
 #[cfg(feature = "subscriber-email")]
-fn email_subscriber(
+pub(crate) fn email_subscriber(
     cfg: &crate::config::EmailConfig,
 ) -> anyhow::Result<Box<dyn delve_core::events::Subscriber>> {
     use crate::config::EmailTls;
@@ -286,56 +286,6 @@ mod tests {
             build("[subscribers.email]\nhost = \"h\"\nfrom = \"a@b.test\"\nto = [\"nope\"]\n")
                 .unwrap_err();
         assert!(bad_to.to_string().contains("to address 'nope'"), "{bad_to}");
-    }
-
-    /// A fake SMTP server that takes any number of connections, one message
-    /// each, and records every line the client sends.
-    #[cfg(feature = "subscriber-email")]
-    fn fake_smtp_server() -> (
-        std::net::SocketAddr,
-        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    ) {
-        use std::io::{BufRead, BufReader, Write};
-
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let log = received.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let mut stream = stream.unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut say = |l: &str| stream.write_all(format!("{l}\r\n").as_bytes()).unwrap();
-                say("220 fake ESMTP");
-                let (mut in_data, mut line) = (false, String::new());
-                loop {
-                    line.clear();
-                    if reader.read_line(&mut line).unwrap() == 0 {
-                        break;
-                    }
-                    let text = line.trim_end().to_string();
-                    log.lock().unwrap().push(text.clone());
-                    if in_data {
-                        if text == "." {
-                            in_data = false;
-                            say("250 queued");
-                        }
-                        continue;
-                    }
-                    let command = text.to_ascii_uppercase();
-                    if command == "DATA" {
-                        in_data = true;
-                        say("354 go ahead");
-                    } else if command == "QUIT" {
-                        say("221 bye");
-                        break;
-                    } else {
-                        say("250 ok");
-                    }
-                }
-            }
-        });
-        (addr, received)
     }
 
     /// Digs a mock vendor twice, the second time with a version bump and a new
