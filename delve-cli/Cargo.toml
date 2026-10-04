@@ -27,6 +27,8 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
 sha2.workspace = true
+dialoguer.workspace = true
+url.workspace = true
 
 [features]
 default = []
@@ -38,4 +40,4 @@ all-vendors = ["vendor-cisco", "vendor-unifi"]
 
 [dev-dependencies]
 async-trait.workspace = true
-url.workspace = true
+serde_json.workspace = true

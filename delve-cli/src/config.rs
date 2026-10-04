@@ -141,7 +141,7 @@ pub struct TransportConfig {
 /// Simplified config-file representation of `Transport` — the config file
 /// shouldn't need to spell out a full `SocketAddr` struct for the common
 /// cases. Resolved into `delve_core::context::Transport` in `resolve()`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportKind {
     Direct,
@@ -366,7 +366,7 @@ impl EmailConfig {
 /// config directory used for `config.toml` itself — the SQLite file is
 /// application data, not configuration, and belongs in the data location
 /// even though both are set from the same config file.
-fn default_db_path() -> String {
+pub(crate) fn default_db_path() -> String {
     default_data_dir()
         .join("delve.sqlite")
         .to_string_lossy()

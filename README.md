@@ -936,10 +936,21 @@ request production access.
 
 ## CLI commands
 
-Styled as an archaeological dig: `dig` scrapes a vendor site (the
-excavation), `catalog` lists what's been found, `provenance` traces one
-find's documented history, `unearth` pulls the actual physical artifact
-out.
+Styled as an archaeological dig: `survey` plans the excavation (writes the
+config), `dig` scrapes a vendor site (the excavation), `catalog` lists
+what's been found, `provenance` traces one find's documented history,
+`unearth` pulls the actual physical artifact out.
+
+### `survey`
+
+Asks questions and writes `config.toml` — see [Creating the config
+file](#creating-the-config-file). `init` and `configure` work too.
+
+```
+delve survey                       # ask, show the file, write it after asking
+delve survey --print               # ask, then write the file to stdout only
+delve survey --defaults --print    # no questions: the commented defaults
+```
 
 ### `dig`
 
@@ -1031,8 +1042,44 @@ the SQLite database is application data, not configuration, so it
 defaults under `$XDG_DATA_HOME` (`~/.local/share/delve/delve.sqlite` on
 Linux) rather than alongside `config.toml`. The database's parent
 directory is created automatically if missing (see the "Storage" section);
-the config directory is not, since `delve` only ever reads `config.toml`,
-never writes it.
+`delve survey` is the only command that writes `config.toml` (creating its
+directory); every other command only reads it.
+
+### Creating the config file
+
+`delve survey` asks a question for each part of the file and writes it,
+commented, so the file explains itself:
+
+- **The database path**, and **which vendors** to dig. A vendor whose terms
+  haven't been reviewed is marked, since `dig` skips it.
+- **UniFi**: which products, and whether to track every model, whole
+  product lines (`USW`, `UAP`, ...) or chosen model codes, with the
+  request-count trade-off.
+- **Credentials** as the *name* of an environment variable, written
+  `env:NAME`. It never asks for a secret, and when an answer looks like a
+  pasted secret it checks before using it as a name. At the end it lists
+  the `export` lines to set.
+- **Transport** (direct, Tor or SOCKS5, per vendor if you like), a
+  **User-Agent** built from a contact address, and the request rate.
+- **Notifications**: which changes to a known version are reported (see
+  [Choosing what counts as a change](#choosing-what-counts-as-a-change)), a
+  **webhook**, and **email** with presets for Postmark, Resend and Amazon
+  SES or any SMTP server. A section the build doesn't have isn't offered.
+
+Then it shows the file and asks before writing. The file is checked first
+with the same code `dig` uses, so a bad address, a half-set login or a zero
+message cap is caught here. On Unix it is written readable only by you
+(`0600`). After writing, it can send a test email and a test webhook,
+through the real subscribers, if you ask.
+
+- **Run it again to change the file.** It starts from the current settings,
+  asks before replacing the file, and keeps the old one as
+  `config.toml.bak`. Comments you added by hand aren't carried over. If you
+  change what UniFi tracks, it reminds you to `dig --redig` once.
+- **It needs a terminal.** Without one it stops and says so. `--print`
+  writes the file to stdout and nothing to disk; `--defaults` asks nothing
+  and writes the commented defaults (it never replaces an existing file).
+- It honours `--config <path>` like every other command.
 
 ```toml
 database_path = "/custom/path/delve.sqlite"   # default: ~/.local/share/delve/delve.sqlite ($XDG_DATA_HOME) — parent dirs are created automatically
@@ -1491,6 +1538,20 @@ exists because of it, not as a design decision made up front.
   `http_client_config`/`rate_limits` (both fall back to framework defaults
   when unset, honor explicit overrides, and confirm setting one field
   doesn't clobber the others').
+- **`delve-cli/src/commands/survey.rs`**: scripted answers drive the real
+  questions through a test prompter, with a golden file per scenario
+  (`src/commands/survey/testdata/`): the defaults, UniFi with every model,
+  product lines with Tor, a per-vendor override, credentials and a webhook,
+  and email through each preset and a local relay. Every written file
+  parses into `Config`, re-renders to itself and passes the same checks.
+  Also: an existing file is the starting point, is replaced only after
+  asking and is backed up; keeping every answer rewrites it unchanged;
+  changing UniFi's models suggests `--redig`; a file that doesn't parse is
+  left alone unless starting over; `--print` and declining write nothing;
+  `--defaults` never replaces a file; the mode is `0600`; no terminal is an
+  error saying what to do; a non-variable name and a pasted secret are asked
+  again; a bad SOCKS address and a bad email address are caught; and the
+  test email and webhook go through the real subscribers to local servers.
 - **`delve-cli/src/commands/unearth.rs`** (`FileSink`/`finalize_sha256`):
   the real `sha2` crate produces the correct digest for the standard
   SHA-256("abc") and SHA-256("") test vectors, and hashes multiple written

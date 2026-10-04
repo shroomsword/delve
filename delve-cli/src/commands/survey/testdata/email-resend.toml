@@ -1,0 +1,44 @@
+# delve configuration, written by `delve survey`. Edit it freely, or run
+# `delve survey` again to change it. The README's "Configuration reference"
+# describes every setting.
+
+# Where delve keeps what it has found.
+# database_path = "DEFAULT_DB"
+
+[vendors]
+# Which compiled-in vendors `dig` runs. An empty list runs all of them.
+enabled = ["unifi"]
+
+[transport]
+# How delve reaches vendor sites: "direct", "tor" (a Tor daemon on
+# 127.0.0.1:9050), or { socks5 = { addr = "host:port" } }.
+# default = "direct"
+# Identifies delve to vendor sites. Include a way to reach you, so a vendor
+# can ask before blocking you.
+user_agent = "delve/0.1.0 (contact: ops@example.test)"
+# Seconds one request, and one connection, may take.
+# request_timeout_secs = 30
+# connect_timeout_secs = 10
+# The fewest milliseconds between two requests to one vendor.
+# min_request_interval_ms = 1000
+
+[notifications]
+# New versions are always reported. These are the changes to a version
+# already stored that are reported too: sha256, release_date,
+# release_notes_url, signature, source_url.
+# changed_fields = ["sha256"]
+
+[subscribers.email]
+host = "smtp.resend.com"
+# "starttls", "implicit" or "none" (a local relay only).
+tls = "starttls"
+# port = 587
+from = "delve@example.test"
+to = ["ops@example.test"]
+# "env:NAME" reads the value from the environment when delve runs.
+username = "resend"
+password = "env:RESEND_API_KEY"
+# One message per dig, split past max_events_per_email; false sends one
+# message per event.
+batch = true
+max_events_per_email = 20

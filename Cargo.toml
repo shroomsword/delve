@@ -44,3 +44,6 @@ futures = "0.3"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "chrono"] }
 anyhow = "1"
 sha2 = "0.10"
+# Interactive prompts for `delve survey`. No default features: the editor and
+# password prompts aren't used.
+dialoguer = { version = "0.12", default-features = false }

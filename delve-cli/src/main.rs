@@ -21,6 +21,11 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    // Before loading the config: survey writes it, and can replace one that
+    // doesn't parse.
+    if let Command::Survey { print, defaults } = cli.command {
+        return commands::survey::run(cli.config.as_deref(), print, defaults).await;
+    }
     let config = config::load(cli.config.as_deref())?;
 
     let store = delve_store_sqlite::SqliteStore::open(&config.database_path).await?;
@@ -43,5 +48,6 @@ async fn main() -> anyhow::Result<()> {
             out,
             no_verify,
         } => commands::unearth::run(&registry, &store, &config, selector, out, no_verify).await,
+        Command::Survey { .. } => unreachable!("survey ran before the config was loaded"),
     }
 }
