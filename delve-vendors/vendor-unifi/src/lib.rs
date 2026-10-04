@@ -45,6 +45,19 @@ use delve_core::prelude::*;
 
 use api::FirmwareRecord;
 
+/// The products `[vendors.settings.unifi] products` may name, and what is
+/// tracked when it isn't set. For tools that offer the choice, such as
+/// `delve survey`.
+pub use api::{DEFAULT_PRODUCTS, SUPPORTED_PRODUCTS};
+
+/// Every product line (`USW`, `UAP`, ...) with its model codes, for tools
+/// that let someone pick models by line, such as `delve survey`. Lines are
+/// in alphabetical order, codes sorted within each. See the README's
+/// "Product lines".
+pub fn product_lines() -> Vec<(&'static str, Vec<&'static str>)> {
+    product_line::lines()
+}
+
 pub struct UnifiPlugin {
     /// Base URL of the firmware list API — [`api::API_BASE`] except in
     /// tests, which point it at a local server.

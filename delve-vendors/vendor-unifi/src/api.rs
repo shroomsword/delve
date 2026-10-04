@@ -71,7 +71,7 @@ pub const DEFAULT_PRODUCTS: &[&str] = &["unifi-firmware"];
 /// - `unifi-dream`: Dream Machines, Dream Routers, Cloud Gateways, Express.
 /// - `unifi-nvr`: Network Video Recorders.
 /// - `unifi-drive`: UNAS network storage (and some `uos-*` packages, which
-///   [`select_records`] drops).
+///   `select_records` drops).
 /// - `unifi-cloudkey`: Cloud Key and Cloud Key Gen2 (+, Enterprise).
 pub const SUPPORTED_PRODUCTS: &[&str] = &[
     "unifi-firmware",

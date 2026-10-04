@@ -532,6 +532,20 @@ pub fn product_line(model: &str) -> Option<&'static str> {
         .map(|i| LINES[i].1)
 }
 
+/// Every product line and its model codes, lines in alphabetical order and
+/// codes sorted within each.
+pub fn lines() -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut lines: Vec<(&'static str, Vec<&'static str>)> = Vec::new();
+    for &(code, line) in LINES {
+        match lines.iter_mut().find(|(l, _)| *l == line) {
+            Some((_, codes)) => codes.push(code),
+            None => lines.push((line, vec![code])),
+        }
+    }
+    lines.sort_by_key(|(line, _)| *line);
+    lines
+}
+
 /// The `device_family` for a model: its product line, or the model code
 /// itself when it has none.
 pub fn device_family(model: &str) -> &str {
@@ -598,6 +612,24 @@ mod tests {
                 assert!(product_name(code).is_some(), "{code} has no name");
             }
         }
+    }
+
+    #[test]
+    fn lines_group_every_mapped_model_under_its_line() {
+        let lines = lines();
+        assert!(lines.windows(2).all(|w| w[0].0 < w[1].0), "sorted by line");
+        let total: usize = lines.iter().map(|(_, codes)| codes.len()).sum();
+        assert_eq!(
+            total,
+            LINES.len(),
+            "every mapped model is in exactly one line"
+        );
+        for (line, codes) in &lines {
+            assert!(codes.windows(2).all(|w| w[0] < w[1]), "{line} codes sorted");
+            assert!(codes.iter().all(|c| product_line(c) == Some(*line)));
+        }
+        let usw = lines.iter().find(|(l, _)| *l == "USW").unwrap();
+        assert!(usw.1.contains(&"USMINI"));
     }
 
     #[test]
