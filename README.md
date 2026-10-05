@@ -30,8 +30,11 @@ Windows x86_64; on Intel macOS the tests are compiled but not run.
   checked against Cisco's live API. `fetch` (binary download) is not
   implemented. Treat it as a first draft — see [Known gaps](#known-gaps).
 
+New here? Start with [Getting started](#getting-started).
+
 ## Contents
 
+- [Getting started](#getting-started)
 - [Goals and non-goals](#goals-and-non-goals)
 - [Workspace layout](#workspace-layout)
 - [Plugin architecture](#plugin-architecture)
@@ -51,6 +54,163 @@ Windows x86_64; on Intel macOS the tests are compiled but not run.
 - [Known gaps](#known-gaps)
 - [Test coverage](#test-coverage)
 - [Not yet scaffolded](#not-yet-scaffolded)
+
+## Getting started
+
+The expected way to run delve is **a scheduled `dig`**, from cron or a
+systemd timer. You set it up once; after that `dig` runs unattended, stores
+what it finds, and tells your subscribers (a webhook, an email) when a new
+firmware version appears. Running `dig`, `catalog`, `provenance` and
+`unearth` by hand is the other way to use it, for looking something up and
+downloading it ([Looking things up by hand](#looking-things-up-by-hand)).
+
+### Setup
+
+**1. Install it.** Build from source, with every feature on: the vendors and
+the subscribers are Cargo features, and a build without them has no vendor to
+dig (`no vendors enabled`).
+
+```
+cargo install --path delve-cli --all-features --locked    # installs `delve` into ~/.cargo/bin
+```
+
+CI builds release binaries for Linux, macOS (Apple Silicon and Intel) and
+Windows when a version tag is pushed, but none has been published yet.
+
+**2. Write the config file.** `delve survey` asks what to track, how to reach
+the vendors and where to send notifications, then writes
+`~/.config/delve/config.toml`
+(see [Creating the config file](#creating-the-config-file)). It needs a
+terminal. To install without one, `delve survey --defaults` writes the
+commented defaults, and you edit the file.
+
+```
+delve survey
+```
+
+When you set up a webhook or an email, it offers to send a test message at
+the end, so you find a wrong URL or password now rather than on the day a
+release is published. Passwords are never typed in: the file holds the *name*
+of an environment variable (`env:NAME`), and `survey` lists the `export`
+lines to set.
+
+**3. Run the first dig.** A vendor's first dig is a **baseline**: it stores
+everything the vendor lists and tells no one, so you aren't sent a message
+for every release a vendor has ever published (see [Baseline vs incremental
+digs](#baseline-vs-incremental-digs)). Every later dig reports only what is
+new or changed.
+
+```
+delve dig
+```
+
+With `RUST_LOG=info` it logs what it is doing; without it, a successful dig
+prints nothing at all, which is what you want from cron.
+
+```
+$ RUST_LOG=info delve dig
+INFO delve::commands::dig: starting dig vendor="unifi"
+INFO vendor_unifi: UniFi firmware list fetched vendor="unifi" received=3380 tracked=3379
+WARN delve::commands::dig: skipping: ToS/robots.txt not yet reviewed ... vendor="cisco"
+```
+
+The default config enables every vendor, and `dig` skips any whose terms
+haven't been reviewed (here, Cisco), so only UniFi runs. It stored 3,379
+releases in about four seconds, in one request.
+
+### Running it from cron
+
+Add an entry with `crontab -e`. This one digs every six hours:
+
+```
+# m h dom mon dow  command
+17 */6 * * *  RUST_LOG=info flock -n /home/alice/.local/state/delve/dig.lock /home/alice/.cargo/bin/delve --config /home/alice/.config/delve/config.toml dig >> /home/alice/.local/state/delve/dig.log 2>&1
+```
+
+Create the log's directory first (`mkdir -p ~/.local/state/delve`). What each
+part is for:
+
+- **Absolute paths for the binary, the config and the log.** Cron runs with a
+  minimal `PATH` and starts in your home directory, not in the directory you
+  tested from. `--config` makes the entry independent of `$HOME` and
+  `$XDG_CONFIG_HOME`. The database path comes from the config file.
+- **`flock -n <lock file>`** runs `dig` only if the previous one has finished.
+  If one is still running, `flock` exits at once with status 1 and nothing
+  runs, so slow runs never pile up on top of each other.
+- **`RUST_LOG=info`** writes a line per vendor, and a line per release found
+  (see [Notifications](#notifications)). Without it only errors are logged, so
+  a webhook or email that failed to send, which is logged as a warning and
+  doesn't fail the dig, would go unnoticed. `RUST_LOG=warn` is the quietest
+  setting that still shows it.
+- **`>> ... 2>&1`** sends the log to a file. delve logs to stderr. Rotate the
+  file with `logrotate` or similar, since it grows with every run.
+- **Credentials** are read from the environment, which cron doesn't inherit
+  from your login shell. Put the variables that `survey` listed at the top of
+  the crontab (a line of its own above the entries, such as
+  `SES_SMTP_PASSWORD=...`), or keep them in a file only you can read and
+  load it from a small wrapper script that cron runs instead.
+- **How often.** UniFi's list is one request per dig, so every few hours puts
+  negligible load on Ubiquiti. Read a vendor's section, and
+  [Compliance](#compliance-tos-and-robotstxt), before scheduling it faster
+  or adding another vendor.
+
+**Exit status.** `dig` exits 0 when every vendor it ran succeeded, and 1 if
+any failed, after the rest have run and subscribers have been told what the
+others found. The error is on stderr (`Error: dig failed for: unifi`), and
+logged. With the output redirected to a file, as above, cron has nothing to
+mail you, so to be told of a failed run chain a check onto the command, such as
+`&& curl -fsS https://hc-ping.com/<id>` for a dead-man's-switch service that
+alerts when the ping stops arriving.
+
+A systemd timer works the same way: run the same command from a service unit,
+with `Environment=` or `EnvironmentFile=` for the credentials and `Type=oneshot`
+so the timer doesn't start another while one runs.
+
+### Looking things up by hand
+
+The commands that read what the scheduled digs have stored are `catalog`,
+`provenance` and `unearth`. They all take the same selector flags (`--vendor`,
+`--device-family`, `--hardware`, `--version` or `--latest`, `--id`), and they
+read the same database, so run them as the user the cron job runs as, or with
+the same `--config`. You can also run `dig` by hand at any time, say to check
+for a release before the next scheduled run.
+
+```
+# Check for new releases now
+delve dig --vendor unifi
+
+# What's known for one device? Newest first
+delve catalog --vendor unifi --hardware U7PG2
+ID                                   VENDOR  DEVICE_FAMILY  VERSION        HARDWARE  RELEASED    SHA256 (short)
+6f5f8b66-a7a5-40ce-b4c6-d915ed2b57ce unifi   UAP            v6.8.2+15592   U7PG2     2026-02-11  3cf8ebe793f7
+39f8be47-2da1-47fa-b80f-eb3acbba5c89 unifi   UAP            v6.7.35+15586  U7PG2     2025-12-01  a46940377324
+...
+
+# Only the newest, with every stored field
+delve catalog --vendor unifi --hardware U7PG2 --latest --long
+
+# When was it seen, and did its hash change between digs?
+delve provenance --vendor unifi --hardware U7PG2 --latest
+OBSERVED_AT                          RUN_ID                                VERSION / HASH
+2026-10-05T00:13:14.962751207+00:00  42ed3443-8406-47f7-8475-31083e1e4c74  v6.8.2+15592 / 3cf8ebe793f7
+2026-10-05T00:14:07.404590161+00:00  096d9f7e-759d-4e16-bb7c-fb6bda1ebd2e  v6.8.2+15592 / 3cf8ebe793f7
+
+# Download the newest into a directory, named from the vendor's file name;
+# the sha256 is checked against the stored hash
+delve unearth --vendor unifi --hardware U7PG2 --latest --out ./downloads/
+Unearthed unifi v6.8.2+15592 to ./downloads/259f-U7PG2-6.8.2-5464c424-a775-4715-8bbc-d84602f55445.bin
+
+# An older version, to a file name you choose
+delve unearth --vendor unifi --hardware U7PG2 --version 'v6.7.35+15586' --out ./ap.bin
+```
+
+`catalog` with no selector lists everything stored, which for UniFi is
+thousands of rows, so narrow it, or pipe it to `less` or `grep`. The
+`--hardware` value is the model code the vendor uses (`U7PG2`, `USMINI`); the
+`catalog` table shows it for each row. `dig` is the only command that talks to
+a vendor for metadata, and `unearth` is the only one that downloads a firmware
+file, so a scheduled dig never fills a disk with binaries
+([Binaries are never stored automatically](#binaries-are-never-stored-automatically)).
 
 ## Goals and non-goals
 
