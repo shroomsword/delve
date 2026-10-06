@@ -168,13 +168,12 @@ async fn dig_each_vendor(
                 tracing::warn!(
                     vendor = vendor_id,
                     "RUNNING UNREVIEWED VENDOR: ToS/robots.txt has not been reviewed; \
-                     --allow-unreviewed is a dev escape hatch, not for scheduled runs \
-                     (see the README's \"Compliance\" section)"
+                     --allow-unreviewed is a dev escape hatch, not for scheduled runs"
                 );
             } else {
                 tracing::warn!(
                     vendor = vendor_id,
-                    "skipping: ToS/robots.txt not yet reviewed (see the README's \"Compliance\" section)"
+                    "skipping: ToS/robots.txt not yet reviewed"
                 );
                 continue;
             }

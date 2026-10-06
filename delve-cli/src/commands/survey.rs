@@ -111,8 +111,8 @@ fn ensure_terminal(is_terminal: bool) -> anyhow::Result<()> {
     if !is_terminal {
         anyhow::bail!(
             "delve survey asks questions, so it needs a terminal. For a starting file \
-             without questions, run `delve survey --defaults --print > config.toml`, or see \
-             the README's \"Configuration reference\""
+             without questions, run `delve survey --defaults --print > config.toml` and edit \
+             it"
         );
     }
     Ok(())
@@ -327,8 +327,8 @@ fn ask_vendors(p: &mut dyn Prompter, ctx: &SurveyContext, a: &mut Answers) -> an
     for (id, reviewed) in &ctx.vendors {
         if !reviewed && a.enabled.contains(id) {
             p.note(&format!(
-                "{id}'s terms haven't been reviewed, so `dig` skips it (see the README's \
-                 \"Compliance\" section)."
+                "{id}'s terms of service and robots.txt haven't been reviewed, so `dig` \
+                 skips it."
             ));
         }
     }
@@ -550,7 +550,7 @@ fn ask_credentials(p: &mut dyn Prompter, a: &mut Answers) -> anyhow::Result<()> 
                 break;
             }
             let key = p.text(
-                &format!("Credential name for {vendor} (the README's vendor section lists them)"),
+                &format!("Credential name for {vendor} (a key its plugin expects)"),
                 None,
                 false,
             )?;
@@ -777,7 +777,7 @@ fn ask_email(p: &mut dyn Prompter, ctx: &SurveyContext, a: &mut Answers) -> anyh
     let current_host = current.as_ref().map(|e| e.host.as_str()).unwrap_or("");
     p.note(
         "Use a service made for sending program mail, with credentials that can only \
-         send (the README's \"Choosing an email service\").",
+         send.",
     );
     let services = vec![
         "Postmark".to_string(),
@@ -1242,6 +1242,10 @@ mod tests {
         assert!(run.result.is_ok(), "{:?}\n{}", run.result, run.transcript);
         assert!(run.finished, "unused answers left\n{}", run.transcript);
         let file = run.file.clone().expect("a file was written");
+        // The binary can be installed without the README, so nothing the
+        // survey shows or writes may send the reader there.
+        assert!(!run.transcript.contains("README"), "{}", run.transcript);
+        assert!(!file.contains("README"), "{file}");
         round_trips(&file);
         golden(name, &file);
         run
@@ -1298,7 +1302,7 @@ mod tests {
             ],
         );
         assert!(
-            run.transcript.contains("terms haven't been reviewed"),
+            run.transcript.contains("robots.txt haven't been reviewed"),
             "{}",
             run.transcript
         );

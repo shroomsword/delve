@@ -1,6 +1,5 @@
 # delve configuration, written by `delve survey`. Edit it freely, or run
-# `delve survey` again to change it. The README's "Configuration reference"
-# describes every setting.
+# `delve survey` again to change it.
 
 # Where delve keeps what it has found.
 database_path = "/srv/delve/delve.sqlite"
@@ -10,10 +9,10 @@ database_path = "/srv/delve/delve.sqlite"
 enabled = ["cisco", "unifi"]
 
 [vendors.settings.unifi]
-# Only these model codes, one request each (README: "Tracking only some models").
+# Only these model codes, one request each.
 # Leave it out to track every model in one request per product.
 models = ["US8", "USMINI"]
-# Which Ubiquiti products to track (README: "Tracking console products").
+# Which Ubiquiti products to track.
 products = ["unifi-firmware", "unifi-dream"]
 
 [vendors.credentials.cisco]
@@ -50,5 +49,5 @@ cisco = 5000
 changed_fields = ["sha256", "release_notes_url"]
 
 [subscribers.webhook]
-# One JSON POST per dig; the README's "Webhook" section has the payload.
+# One JSON POST per dig, listing what changed.
 url = "https://hooks.example.test/delve"

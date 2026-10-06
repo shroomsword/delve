@@ -196,8 +196,7 @@ pub(crate) fn render(answers: &Answers, default_database_path: &str) -> String {
     let _ = writeln!(
         o,
         "# delve configuration, written by `delve survey`. Edit it freely, or run\n\
-         # `delve survey` again to change it. The README's \"Configuration reference\"\n\
-         # describes every setting.\n"
+         # `delve survey` again to change it.\n"
     );
 
     let _ = writeln!(o, "# Where delve keeps what it has found.");
@@ -324,10 +323,7 @@ pub(crate) fn render(answers: &Answers, default_database_path: &str) -> String {
 
     if let Some(url) = &answers.webhook_url {
         let _ = writeln!(o, "\n[subscribers.webhook]");
-        let _ = writeln!(
-            o,
-            "# One JSON POST per dig; the README's \"Webhook\" section has the payload."
-        );
+        let _ = writeln!(o, "# One JSON POST per dig, listing what changed.");
         let _ = writeln!(o, "url = {}", string(url));
     }
 
@@ -382,11 +378,9 @@ pub(crate) fn render(answers: &Answers, default_database_path: &str) -> String {
 /// A comment for a vendor setting the survey knows about.
 fn setting_comment(vendor: &str, name: &str) -> Option<&'static str> {
     match (vendor, name) {
-        ("unifi", "products") => {
-            Some("Which Ubiquiti products to track (README: \"Tracking console products\").")
-        }
+        ("unifi", "products") => Some("Which Ubiquiti products to track."),
         ("unifi", "models") => Some(
-            "Only these model codes, one request each (README: \"Tracking only some models\").\n\
+            "Only these model codes, one request each.\n\
              # Leave it out to track every model in one request per product.",
         ),
         _ => None,
