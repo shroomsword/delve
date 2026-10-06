@@ -428,13 +428,105 @@ pub fn load(override_path: Option<&Path>) -> anyhow::Result<Config> {
         }
     };
 
-    toml::from_str(&contents)
-        .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {e}", path.display()))
+    let mut config: Config = toml::from_str(&contents)
+        .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {e}", path.display()))?;
+    config.expand_paths(dirs::home_dir().as_deref())?;
+    Ok(config)
+}
+
+impl Config {
+    /// Expands a leading `~` in every path-valued setting (today only
+    /// `database_path`) to `home`. Done after parsing, not in serde, so
+    /// `delve survey` — which parses the file itself — rewrites a `~` path
+    /// as the user typed it instead of as an absolute path.
+    fn expand_paths(&mut self, home: Option<&Path>) -> anyhow::Result<()> {
+        self.database_path = expand_home(&self.database_path, "database_path", home)?;
+        Ok(())
+    }
+}
+
+/// Replaces a leading `~` or `~/` in `value` with `home`. Anything else is
+/// returned unchanged: a `~` that isn't the whole first component (`~bob/x`,
+/// `a/~/b`) isn't ours to expand. Errors, naming `setting`, when the value
+/// needs the home directory and `home` is unknown, rather than quietly
+/// using a directory literally called `~`.
+fn expand_home(value: &str, setting: &str, home: Option<&Path>) -> anyhow::Result<String> {
+    let rest = if value == "~" {
+        ""
+    } else if let Some(rest) = value.strip_prefix("~/") {
+        rest
+    } else {
+        return Ok(value.to_string());
+    };
+    let home = home.ok_or_else(|| {
+        anyhow::anyhow!("{setting} = {value:?} starts with `~`, but the home directory is unknown")
+    })?;
+    let expanded = if rest.is_empty() {
+        home.to_path_buf()
+    } else {
+        home.join(rest)
+    };
+    expanded.to_str().map(str::to_owned).ok_or_else(|| {
+        anyhow::anyhow!("{setting} = {value:?}: the home directory is not valid UTF-8")
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_home_replaces_a_leading_tilde_with_the_home_directory() {
+        let home = Path::new("/home/myuser");
+        let expand = |v| expand_home(v, "database_path", Some(home)).unwrap();
+        // Built with `join`, since Windows joins with a backslash.
+        let expected = home.join(".local/share/delve/delve.sqlite");
+        assert_eq!(
+            expand("~/.local/share/delve/delve.sqlite"),
+            expected.to_str().unwrap()
+        );
+        assert_eq!(expand("~"), home.to_str().unwrap());
+    }
+
+    #[test]
+    fn expand_home_leaves_other_paths_alone() {
+        let home = Path::new("/home/myuser");
+        for v in [
+            "/abs/delve.sqlite",
+            "rel/delve.sqlite",
+            "a/~/b",
+            "x~",
+            "~bob/x",
+            "",
+        ] {
+            assert_eq!(expand_home(v, "database_path", Some(home)).unwrap(), v);
+        }
+    }
+
+    #[test]
+    fn expand_home_without_a_home_directory_errors_naming_the_setting() {
+        let err = expand_home("~/x", "database_path", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("database_path") && err.contains("~/x"),
+            "{err}"
+        );
+        // Paths that don't use `~` don't need a home directory.
+        assert_eq!(expand_home("/x", "database_path", None).unwrap(), "/x");
+    }
+
+    #[test]
+    fn expand_paths_runs_after_parsing_so_survey_keeps_what_was_typed() {
+        let mut config: Config = toml::from_str(r#"database_path = "~/d/delve.sqlite""#).unwrap();
+        assert_eq!(config.database_path, "~/d/delve.sqlite");
+        let home = Path::new("/home/myuser");
+        config.expand_paths(Some(home)).unwrap();
+        assert_eq!(
+            config.database_path,
+            home.join("d/delve.sqlite").to_str().unwrap()
+        );
+    }
 
     #[test]
     fn empty_config_parses_with_all_defaults() {

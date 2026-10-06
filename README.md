@@ -1201,7 +1201,13 @@ run works with no setup at all; a missing file at an explicitly-given
 the SQLite database is application data, not configuration, so it
 defaults under `$XDG_DATA_HOME` (`~/.local/share/delve/delve.sqlite` on
 Linux) rather than alongside `config.toml`. The database's parent
-directory is created automatically if missing (see the "Storage" section);
+directory is created automatically if missing (see the "Storage" section).
+A leading `~` in `database_path` (`"~/delve/delve.sqlite"`, or just `"~"`) is
+expanded to your home directory when the config is loaded. `~user`, `$VAR`
+and a `~` anywhere but the start are used as written. A relative path is
+relative to the directory `delve` runs in, which under cron is usually not
+the one you expect, so prefer an absolute path or `~/`.
+
 `delve survey` is the only command that writes `config.toml` (creating its
 directory); every other command only reads it.
 
