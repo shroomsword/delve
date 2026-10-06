@@ -12,8 +12,7 @@ use clap::{Args, Parser, Subcommand};
     about = "Embedded firmware scraper and notification framework"
 )]
 pub struct Cli {
-    /// Override the default config path (~/.config/delve/config.toml) — see
-    /// the README's "Configuration reference" section.
+    /// Override the default config path (~/.config/delve/config.toml).
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
@@ -23,31 +22,29 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Scrape enabled vendors. Auto-detects baseline vs. incremental per
-    /// vendor (see the README's "Baseline vs incremental digs" section) —
-    /// no flag needed to say which.
+    /// Scrape enabled vendors. A vendor's first dig is a silent baseline (no
+    /// notifications); later digs report what changed. No flag needed to say
+    /// which.
     Dig {
         /// Restrict to one vendor. Omit to dig every enabled vendor.
         #[arg(long)]
         vendor: Option<String>,
 
         /// Clear the vendor's baseline first, so this dig is treated as a
-        /// fresh baseline (silent, no notifications) — see the README's
-        /// "Baseline vs incremental digs" and "CLI commands" sections.
+        /// fresh baseline (silent, no notifications).
         #[arg(long, requires = "vendor")]
         redig: bool,
 
         /// Dev escape hatch: run the named vendor even though its plugin
-        /// has `tos_reviewed: false`, logging a loud warning. Only valid
-        /// with `--vendor`, so an unfiltered (e.g. scheduled) dig can never
-        /// pick it up. Results are written to the real store — see the
-        /// README's "Compliance" section.
+        /// has `tos_reviewed: false` (its terms of service and robots.txt
+        /// haven't been reviewed), logging a loud warning. Only valid with
+        /// `--vendor`, so an unfiltered (e.g. scheduled) dig can never pick
+        /// it up. Results are written to the real store.
         #[arg(long, requires = "vendor")]
         allow_unreviewed: bool,
     },
 
-    /// Print currently-known firmware attributes. No downloading — see the
-    /// README's "CLI commands" section.
+    /// Print currently-known firmware attributes. No downloading.
     Catalog {
         #[command(flatten)]
         selector: SelectorArgs,
@@ -57,17 +54,15 @@ pub enum Command {
         long: bool,
     },
 
-    /// Show the revision history for one firmware entry — see the README's
-    /// "CLI commands" section. Requires
-    /// enough of `selector` to resolve to exactly one entry.
+    /// Show the revision history for one firmware entry. Requires enough of
+    /// the selector flags to resolve to exactly one entry.
     Provenance {
         #[command(flatten)]
         selector: SelectorArgs,
     },
 
     /// Ask questions and write the config file, starting from the current one
-    /// when there is one — see the README's "Creating the config file".
-    /// Needs a terminal, unless `--defaults` is given.
+    /// when there is one. Needs a terminal, unless `--defaults` is given.
     #[command(alias = "init", alias = "configure")]
     Survey {
         /// Write the file to stdout instead of to the config path.
@@ -80,8 +75,7 @@ pub enum Command {
     },
 
     /// Download a firmware binary. Never happens automatically during
-    /// `dig` — this is the only command that touches binary bytes (see the
-    /// README's "CLI commands" section).
+    /// `dig` — this is the only command that touches binary bytes.
     Unearth {
         #[command(flatten)]
         selector: SelectorArgs,
@@ -96,8 +90,7 @@ pub enum Command {
     },
 }
 
-/// Shared selector flags across `catalog`/`provenance`/`unearth` (see the
-/// README's "CLI commands" section).
+/// Shared selector flags across `catalog`/`provenance`/`unearth`.
 /// `--id` is mutually sufficient on its own; the rest compose the natural key.
 #[derive(Args, Clone)]
 pub struct SelectorArgs {
@@ -119,11 +112,11 @@ pub struct SelectorArgs {
     #[arg(long, conflicts_with = "latest")]
     pub version: Option<String>,
 
-    /// Resolve to the highest-precedence version for the matched entries,
-    /// per VersionKey ordering (see the README's "Data model and identity
-    /// keys" section) — only meaningful when a reliable
-    /// ordinal exists; entries with an Opaque version scheme can't be
-    /// resolved this way.
+    /// Resolve to the newest version for the matched entries, by version
+    /// number rather than release date (a patch backported to an older
+    /// branch doesn't count as newer). Only meaningful when the versions can
+    /// be ordered; entries with an opaque version scheme can't be resolved
+    /// this way.
     #[arg(long, conflicts_with = "version")]
     pub latest: bool,
 }
@@ -142,5 +135,38 @@ impl SelectorArgs {
             version: self.version,
             latest: self.latest,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    use super::Cli;
+
+    /// The binary can be installed without the README, so no help text may
+    /// send the reader there.
+    fn assert_no_readme(cmd: &mut clap::Command, path: &str) {
+        let help = cmd.render_long_help().to_string();
+        assert!(
+            !help.contains("README"),
+            "`{path} --help` mentions the README:\n{help}"
+        );
+        let names: Vec<String> = cmd
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        for name in names {
+            let sub = cmd.find_subcommand_mut(&name).expect("listed above");
+            assert_no_readme(sub, &format!("{path} {name}"));
+        }
+    }
+
+    #[test]
+    fn help_text_never_mentions_the_readme() {
+        let mut cmd = Cli::command();
+        // `render_long_help` needs the command built, with its global flags.
+        cmd.build();
+        assert_no_readme(&mut cmd, "delve");
     }
 }

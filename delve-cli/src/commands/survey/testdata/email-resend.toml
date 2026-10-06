@@ -1,6 +1,5 @@
 # delve configuration, written by `delve survey`. Edit it freely, or run
-# `delve survey` again to change it. The README's "Configuration reference"
-# describes every setting.
+# `delve survey` again to change it.
 
 # Where delve keeps what it has found.
 # database_path = "DEFAULT_DB"
