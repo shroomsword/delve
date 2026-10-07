@@ -181,9 +181,9 @@ delve dig --vendor unifi
 
 # What's known for one device? Newest first
 delve catalog --vendor unifi --hardware U7PG2
-ID                                   VENDOR  DEVICE_FAMILY  VERSION        HARDWARE  RELEASED    SHA256 (short)
-6f5f8b66-a7a5-40ce-b4c6-d915ed2b57ce unifi   UAP            v6.8.2+15592   U7PG2     2026-02-11  3cf8ebe793f7
-39f8be47-2da1-47fa-b80f-eb3acbba5c89 unifi   UAP            v6.7.35+15586  U7PG2     2025-12-01  a46940377324
+ID                                    VENDOR  DEVICE_FAMILY  VERSION         HARDWARE  RELEASED    SHA256 (short)
+6f5f8b66-a7a5-40ce-b4c6-d915ed2b57ce  unifi   UAP            v6.8.2+15592    U7PG2     2026-02-11  3cf8ebe793f7
+39f8be47-2da1-47fa-b80f-eb3acbba5c89  unifi   UAP            v6.7.35+15586   U7PG2     2025-12-01  a46940377324
 ...
 
 # Only the newest, with every stored field
