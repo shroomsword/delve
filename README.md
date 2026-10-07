@@ -1165,6 +1165,15 @@ dates, or did we just re-scrape the same file twice" — and for an audit
 trail independent of whether a notification fired (baseline-dig
 observations are silent but still land in the revision log).
 
+`OBSERVED_AT` is shown in your local timezone, with the UTC offset
+(`2026-10-05T14:44:18.740169589-04:00`), so it names the same instant as the
+stored value. The database stores UTC, and so do webhook payloads (`first_seen`
+is `...Z`); only what a command prints for you to read is converted. Pass
+`--utc` (accepted by every command, since it is a global flag) for UTC
+(`2026-10-05T18:44:18.740169589+00:00`), which is what a script parsing the
+output should use; it is the same value apart from the offset. `catalog`'s `RELEASED` is a date the vendor
+published, with no time of day, and is never shifted.
+
 ### `unearth`
 
 The only command that touches binary bytes. Direct pass-through to the

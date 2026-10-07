@@ -16,6 +16,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
+    /// Show timestamps in UTC instead of in the local timezone. Use it in
+    /// scripts that parse the output.
+    #[arg(long, global = true)]
+    pub utc: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }

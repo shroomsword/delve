@@ -6,10 +6,12 @@ use delve_core::store::{FirmwareKey, MetadataStore};
 
 use crate::cli::SelectorArgs;
 use crate::commands::table::write_table;
+use crate::commands::timestamp::Display;
 
 pub async fn run(
     store: &dyn MetadataStore,
     selector: SelectorArgs,
+    time: Display,
     out: &mut dyn Write,
 ) -> anyhow::Result<()> {
     // provenance requires enough specificity to resolve to exactly one
@@ -37,7 +39,7 @@ pub async fn run(
                 .map(|h| h.iter().map(|b| format!("{:02x}", b)).collect::<String>())
                 .unwrap_or_else(|| "-".into());
             vec![
-                rev.observed_at.to_rfc3339(),
+                time.format(rev.observed_at),
                 rev.run_id.to_string(),
                 format!(
                     "{} / {}",
@@ -63,7 +65,7 @@ mod tests {
         selector: SelectorArgs,
     ) -> anyhow::Result<String> {
         let mut out = Vec::new();
-        run(store, selector, &mut out).await?;
+        run(store, selector, Display::Utc, &mut out).await?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -139,6 +141,42 @@ mod tests {
         );
         assert!(lines[1][..version].ends_with("  "), "{out}");
         assert!(lines[1][version..].starts_with("1.0 / "), "{out}");
+    }
+
+    #[tokio::test]
+    async fn observed_at_is_local_with_the_same_precision_as_utc() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+        )
+        .await;
+        let first_cell = |out: &str| {
+            out.lines()
+                .nth(1)
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+
+        let mut local = Vec::new();
+        run(&store, widget_1_0(), Display::Local, &mut local)
+            .await
+            .unwrap();
+        let local = first_cell(&String::from_utf8(local).unwrap());
+        let utc = first_cell(&provenance(&store, widget_1_0()).await.unwrap());
+        assert!(utc.ends_with("+00:00") && utc.contains('.'), "{utc}");
+
+        // Whatever the machine's zone is, the local form has a numeric offset
+        // and the same fractional digits as the UTC form, so only the offset
+        // (and the hours it shifts) differs, and both name the same instant.
+        let local_time = chrono::DateTime::parse_from_rfc3339(&local).unwrap();
+        let utc_time = chrono::DateTime::parse_from_rfc3339(&utc).unwrap();
+        assert_eq!(local_time, utc_time, "{local} vs {utc}");
+        let fraction = |s: &str| s.split_once('.').map(|(_, f)| f[..f.len() - 6].to_string());
+        assert_eq!(fraction(&local), fraction(&utc), "{local} vs {utc}");
     }
 
     #[tokio::test]
