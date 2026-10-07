@@ -41,3 +41,4 @@ all-vendors = ["vendor-cisco", "vendor-unifi"]
 [dev-dependencies]
 async-trait.workspace = true
 serde_json.workspace = true
+chrono-tz.workspace = true

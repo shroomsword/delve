@@ -41,7 +41,8 @@ async fn main() -> anyhow::Result<()> {
             commands::catalog::run(&store, selector, long, &mut std::io::stdout().lock()).await
         }
         Command::Provenance { selector } => {
-            commands::provenance::run(&store, selector, &mut std::io::stdout().lock()).await
+            let time = commands::timestamp::Display::from_utc_flag(cli.utc);
+            commands::provenance::run(&store, selector, time, &mut std::io::stdout().lock()).await
         }
         Command::Unearth {
             selector,
