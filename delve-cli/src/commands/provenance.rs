@@ -5,6 +5,7 @@ use std::io::Write;
 use delve_core::store::{FirmwareKey, MetadataStore};
 
 use crate::cli::SelectorArgs;
+use crate::commands::table::write_table;
 
 pub async fn run(
     store: &dyn MetadataStore,
@@ -27,22 +28,26 @@ pub async fn run(
     let key = FirmwareKey::from_metadata(&entry);
     let revisions = store.history(&key).await?;
 
-    writeln!(out, "{:<24} {:<38} VERSION / HASH", "OBSERVED_AT", "RUN_ID")?;
-    for rev in &revisions {
-        let hash = rev
-            .metadata
-            .sha256
-            .map(|h| h.iter().map(|b| format!("{:02x}", b)).collect::<String>())
-            .unwrap_or_else(|| "-".into());
-        writeln!(
-            out,
-            "{:<24} {:<38} {} / {}",
-            rev.observed_at.to_rfc3339(),
-            rev.run_id,
-            rev.metadata.version.raw,
-            &hash[..hash.len().min(12)],
-        )?;
-    }
+    let rows: Vec<Vec<String>> = revisions
+        .iter()
+        .map(|rev| {
+            let hash = rev
+                .metadata
+                .sha256
+                .map(|h| h.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+                .unwrap_or_else(|| "-".into());
+            vec![
+                rev.observed_at.to_rfc3339(),
+                rev.run_id.to_string(),
+                format!(
+                    "{} / {}",
+                    rev.metadata.version.raw,
+                    &hash[..hash.len().min(12)]
+                ),
+            ]
+        })
+        .collect();
+    write_table(out, &["OBSERVED_AT", "RUN_ID", "VERSION / HASH"], &rows)?;
 
     Ok(())
 }
@@ -109,6 +114,31 @@ mod tests {
             .map(|l| l.split_whitespace().nth(1).unwrap())
             .collect();
         assert_eq!(run_ids.len(), 3, "{out}");
+    }
+
+    #[tokio::test]
+    async fn columns_line_up_under_their_headers() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+        )
+        .await;
+        let out = provenance(&store, widget_1_0()).await.unwrap();
+
+        // The timestamp is longer than its header, and the run id is a UUID.
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2, "{out}");
+        let run_id = lines[0].find("RUN_ID").unwrap();
+        let version = lines[0].find("VERSION / HASH").unwrap();
+        assert_eq!(lines[1].find(' ').map(|i| i < run_id), Some(true), "{out}");
+        assert!(lines[1][..run_id].ends_with("  "), "{out}");
+        assert_eq!(
+            lines[1][run_id..].split_whitespace().next().unwrap().len(),
+            36
+        );
+        assert!(lines[1][..version].ends_with("  "), "{out}");
+        assert!(lines[1][version..].starts_with("1.0 / "), "{out}");
     }
 
     #[tokio::test]

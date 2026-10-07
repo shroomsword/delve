@@ -5,6 +5,7 @@ use std::io::Write;
 use delve_core::store::MetadataStore;
 
 use crate::cli::SelectorArgs;
+use crate::commands::table::write_table;
 
 pub async fn run(
     store: &dyn MetadataStore,
@@ -61,31 +62,40 @@ pub async fn run(
         // Default view: the most useful fields only, one line per entry. The
         // display name is left to `--long`: a NAME column took the table from
         // 134 to 171 characters wide.
-        writeln!(
+        let rows: Vec<Vec<String>> = entries
+            .iter()
+            .map(|s| {
+                let e = &s.metadata;
+                let short_hash = e
+                    .sha256
+                    .map(|h| hex_string(&h)[..12].to_string())
+                    .unwrap_or_else(|| "-".into());
+                vec![
+                    s.id.to_string(),
+                    e.vendor.clone(),
+                    e.device_family.clone(),
+                    e.version.raw.clone(),
+                    e.hardware_targets.join("+"),
+                    e.release_date
+                        .map(|d| d.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    short_hash,
+                ]
+            })
+            .collect();
+        write_table(
             out,
-            "{:<36} {:<12} {:<14} {:<24} {:<16} {:<12} SHA256 (short)",
-            "ID", "VENDOR", "DEVICE_FAMILY", "VERSION", "HARDWARE", "RELEASED"
+            &[
+                "ID",
+                "VENDOR",
+                "DEVICE_FAMILY",
+                "VERSION",
+                "HARDWARE",
+                "RELEASED",
+                "SHA256 (short)",
+            ],
+            &rows,
         )?;
-        for s in &entries {
-            let e = &s.metadata;
-            let short_hash = e
-                .sha256
-                .map(|h| hex_string(&h)[..12].to_string())
-                .unwrap_or_else(|| "-".into());
-            writeln!(
-                out,
-                "{:<36} {:<12} {:<14} {:<24} {:<16} {:<12} {}",
-                s.id,
-                e.vendor,
-                e.device_family,
-                e.version.raw,
-                e.hardware_targets.join("+"),
-                e.release_date
-                    .map(|d| d.to_string())
-                    .unwrap_or_else(|| "-".into()),
-                short_hash,
-            )?;
-        }
     }
 
     Ok(())
@@ -161,10 +171,40 @@ mod tests {
             .into_iter()
             .find(|r| r.contains("sprocket"))
             .unwrap();
-        assert!(sprocket[37..].starts_with("globex"), "{sprocket}");
+        assert_eq!(sprocket.split_whitespace().nth(1), Some("globex"));
         assert!(sprocket.contains("2026-09-01"), "{sprocket}");
         // sha byte 5 → "0505...", truncated to 12 hex digits.
         assert!(sprocket.ends_with(" 050505050505"), "{sprocket}");
+    }
+
+    #[tokio::test]
+    async fn default_view_columns_line_up_whatever_the_values_are() {
+        let store = memory_store().await;
+        let mut long = release(
+            "a-very-long-device-family-name",
+            "10.20.30.40-rc1+999999",
+            &[1],
+            1,
+        );
+        long.hardware = &["MODEL-ONE", "MODEL-TWO", "MODEL-THREE", "MODEL-FOUR"];
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![long, release("w", "1", &[2], 2)]),
+        )
+        .await;
+        let out = catalog(&store, selector(), false).await.unwrap();
+
+        // Every column starts where its header does, in every row.
+        let header = out.lines().next().unwrap();
+        for name in ["VENDOR", "DEVICE_FAMILY", "VERSION", "HARDWARE", "RELEASED"] {
+            let at = header.find(name).unwrap();
+            for row in rows(&out) {
+                let before = &row[..at];
+                assert!(before.ends_with("  "), "{name} is misaligned:\n{out}");
+                assert!(!row[at..].starts_with(' '), "{name} is misaligned:\n{out}");
+            }
+        }
+        assert!(out.lines().all(|l| !l.ends_with(' ')), "{out}");
     }
 
     #[tokio::test]
