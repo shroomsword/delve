@@ -1,6 +1,9 @@
 mod cli;
 mod commands;
 mod config;
+mod report;
+
+use std::process::ExitCode;
 
 use clap::Parser;
 use cli::{Cli, Command};
@@ -28,11 +31,22 @@ fn stdout(choice: clap::ColorChoice) -> anstream::AutoStream<std::io::StdoutLock
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> ExitCode {
     tracing_subscriber::fmt()
+        .with_timer(report::timer())
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            report::write_fatal(&err);
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // Before loading the config: survey writes it, and can replace one that
     // doesn't parse.
