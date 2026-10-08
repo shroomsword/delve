@@ -402,30 +402,49 @@ impl MetadataStore for SqliteStore {
              FROM firmware_current WHERE 1 = 1",
         );
 
+        // Selector flags ignore ASCII case (`--vendor UniFi` finds `unifi`).
+        // Only this lookup does: identity (the UNIQUE key, `lookup`,
+        // `upsert`, `history`) stays exact. NOCASE folds ASCII only, and
+        // vendor ids, device families, hardware codes and versions are ASCII.
+        // `vendor`/`device_family` use idx_firmware_current_vendor_nocase.
         if let Some(vendor) = &selector.vendor {
-            qb.push(" AND vendor = ").push_bind(vendor.clone());
+            qb.push(" AND vendor = ")
+                .push_bind(vendor.clone())
+                .push(" COLLATE NOCASE");
         }
         if let Some(device_family) = &selector.device_family {
             qb.push(" AND device_family = ")
-                .push_bind(device_family.clone());
-        }
-        if let Some(hardware) = &selector.hardware {
-            qb.push(" AND hardware_key = ")
-                .push_bind(hardware_key(hardware));
+                .push_bind(device_family.clone())
+                .push(" COLLATE NOCASE");
         }
         if let Some(version) = &selector.version {
-            qb.push(" AND version_raw = ").push_bind(version.clone());
+            qb.push(" AND version_raw = ")
+                .push_bind(version.clone())
+                .push(" COLLATE NOCASE");
         }
         // version_ordinal DESC so, within each (vendor, device_family,
         // hardware_key) group, the highest-precedence version comes first —
         // the --latest pass below relies on that ordering.
         qb.push(" ORDER BY vendor, device_family, hardware_key, version_ordinal DESC");
 
-        let rows = qb
+        let mut rows = qb
             .build()
             .fetch_all(&self.pool)
             .await
             .map_err(|e| StoreError::Backend(e.to_string()))?;
+
+        // Hardware is matched here, not in SQL: the stored key is the targets
+        // sorted with their original case, so `B+a` and `a+b` are the same
+        // set of targets but different strings, and no collation can see
+        // that. (The old `hardware_key = ?` could not use an index either,
+        // since it is not the leading column of one.)
+        if let Some(hardware) = &selector.hardware {
+            let wanted = folded_hardware_key(&hardware_key(hardware));
+            rows.retain(|row| {
+                row.try_get::<String, _>("hardware_key")
+                    .is_ok_and(|key| folded_hardware_key(&key) == wanted)
+            });
+        }
 
         if !selector.latest {
             return rows.iter().map(Self::row_to_stored).collect();
@@ -465,6 +484,15 @@ impl MetadataStore for SqliteStore {
         }
         Ok(result)
     }
+}
+
+/// A hardware key with each target lowercased (ASCII) and the targets sorted
+/// again, so two keys are equal exactly when they name the same targets
+/// ignoring case and the order the vendor listed them in.
+fn folded_hardware_key(key: &str) -> String {
+    let mut targets: Vec<String> = key.split('+').map(str::to_ascii_lowercase).collect();
+    targets.sort_unstable();
+    targets.join("+")
 }
 
 #[cfg(test)]
@@ -748,6 +776,174 @@ mod tests {
         };
         let found = store.resolve_one(&selector).await.unwrap();
         assert!(found.is_some());
+    }
+
+    /// Stores one entry, observed once.
+    async fn put(
+        store: &SqliteStore,
+        run: uuid::Uuid,
+        vendor: &str,
+        family: &str,
+        version: &str,
+        ordinal: u64,
+        hw: &[&str],
+    ) {
+        let r = firmware_ref(vendor, family, "https://example.test/a");
+        let meta = metadata(vendor, family, version, Some(vec![ordinal]), hw, 1);
+        store.upsert(&r, &meta, run).await.unwrap();
+    }
+
+    fn by(f: impl FnOnce(&mut FirmwareSelector)) -> FirmwareSelector {
+        let mut selector = FirmwareSelector::default();
+        f(&mut selector);
+        selector
+    }
+
+    #[tokio::test]
+    async fn every_selector_flag_ignores_case_and_output_keeps_the_stored_case() {
+        let store = test_store().await;
+        let run = store.start_run("unifi", RunKind::Baseline).await.unwrap();
+        put(&store, run, "unifi", "UAP", "v6.8.2+15592", 1, &["U7PG2"]).await;
+        put(&store, run, "unifi", "USW", "v7.0.0", 2, &["USMINI"]).await;
+
+        let cases = [
+            by(|s| s.vendor = Some("UniFi".into())),
+            by(|s| s.device_family = Some("uap".into())),
+            by(|s| s.hardware = Some(vec!["u7pg2".into()])),
+            by(|s| s.version = Some("V6.8.2+15592".into())),
+            by(|s| {
+                s.vendor = Some("UNIFI".into());
+                s.device_family = Some("Uap".into());
+                s.hardware = Some(vec!["U7pG2".into()]);
+                s.version = Some("v6.8.2+15592".into());
+            }),
+        ];
+        for selector in cases {
+            let found = store.resolve_many(&selector).await.unwrap();
+            let uap: Vec<_> = found
+                .iter()
+                .filter(|f| f.metadata.device_family == "UAP")
+                .collect();
+            assert_eq!(uap.len(), 1, "{selector:?}");
+            // What the user typed is not what is shown.
+            assert_eq!(uap[0].metadata.vendor, "unifi");
+            assert_eq!(uap[0].metadata.version.raw, "v6.8.2+15592");
+            assert_eq!(uap[0].metadata.hardware_targets, vec!["U7PG2".to_string()]);
+        }
+        // Narrowing still narrows.
+        let one = by(|s| s.device_family = Some("usw".into()));
+        let found = store.resolve_many(&one).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].metadata.device_family, "USW");
+        let none = by(|s| s.vendor = Some("unif".into()));
+        assert!(store.resolve_many(&none).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hardware_matches_the_same_targets_in_any_order_and_case() {
+        let store = test_store().await;
+        let run = store.start_run("acme", RunKind::Baseline).await.unwrap();
+        // Stored key is sorted with the original case: `rev-B+rev-a`.
+        put(&store, run, "acme", "widget", "1.0", 1, &["rev-a", "rev-B"]).await;
+        put(&store, run, "acme", "widget", "2.0", 2, &["rev-a"]).await;
+
+        for typed in [
+            vec!["REV-A", "rev-b"],
+            vec!["rev-b", "rev-a"],
+            vec!["Rev-B", "Rev-A"],
+        ] {
+            let selector =
+                by(|s| s.hardware = Some(typed.iter().map(ToString::to_string).collect()));
+            let found = store.resolve_many(&selector).await.unwrap();
+            assert_eq!(found.len(), 1, "{typed:?}");
+            assert_eq!(found[0].metadata.version.raw, "1.0");
+        }
+        // A subset of the targets is a different key, as before.
+        let one = by(|s| s.hardware = Some(vec!["REV-A".into()]));
+        let found = store.resolve_many(&one).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].metadata.version.raw, "2.0");
+    }
+
+    #[tokio::test]
+    async fn latest_still_groups_after_a_case_insensitive_match() {
+        let store = test_store().await;
+        let run = store.start_run("acme", RunKind::Baseline).await.unwrap();
+        put(&store, run, "acme", "Widget", "1.0", 1, &["rev-a"]).await;
+        put(&store, run, "acme", "Widget", "1.10", 10, &["rev-a"]).await;
+
+        let selector = by(|s| {
+            s.vendor = Some("ACME".into());
+            s.device_family = Some("widget".into());
+            s.latest = true;
+        });
+        let found = store.resolve_many(&selector).await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].metadata.version.raw, "1.10");
+    }
+
+    #[tokio::test]
+    async fn entries_that_differ_only_in_case_are_both_matched_never_one_picked() {
+        let store = test_store().await;
+        let run = store.start_run("acme", RunKind::Baseline).await.unwrap();
+        put(&store, run, "acme", "Widget", "1.0", 1, &["rev-a"]).await;
+        put(&store, run, "acme", "widget", "1.0", 1, &["rev-a"]).await;
+
+        let selector = by(|s| s.device_family = Some("WIDGET".into()));
+        assert_eq!(store.resolve_many(&selector).await.unwrap().len(), 2);
+        let err = store.resolve_one(&selector).await.unwrap_err();
+        assert!(matches!(err, StoreError::Ambiguous(2)), "{err}");
+
+        // Identity is exact, so the two are distinct entries that an
+        // exact-case lookup still tells apart.
+        let hw = vec!["rev-a".to_string()];
+        let key = |family| FirmwareKey {
+            vendor: "acme",
+            device_family: family,
+            hardware_targets: &hw,
+            version_raw: "1.0",
+        };
+        assert_eq!(
+            store
+                .lookup(&key("Widget"))
+                .await
+                .unwrap()
+                .unwrap()
+                .device_family,
+            "Widget"
+        );
+        assert_eq!(
+            store
+                .lookup(&key("widget"))
+                .await
+                .unwrap()
+                .unwrap()
+                .device_family,
+            "widget"
+        );
+        assert!(store.lookup(&key("WIDGET")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn vendor_and_family_lookups_use_the_nocase_index_not_a_scan() {
+        let store = test_store().await;
+        let plan = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT id FROM firmware_current \
+             WHERE vendor = ? COLLATE NOCASE AND device_family = ? COLLATE NOCASE",
+        )
+        .bind("unifi")
+        .bind("UAP")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let detail: Vec<String> = plan.iter().map(|r| r.get("detail")).collect();
+        assert!(
+            detail
+                .iter()
+                .any(|d| d.contains("idx_firmware_current_vendor_nocase")),
+            "{detail:?}"
+        );
+        assert!(detail.iter().all(|d| !d.starts_with("SCAN")), "{detail:?}");
     }
 
     #[tokio::test]

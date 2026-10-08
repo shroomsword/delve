@@ -138,7 +138,10 @@ async fn dig_each_vendor(
     let (default_rate_limit, rate_limit_overrides) = config.transport.rate_limits();
 
     let vendor_ids: Vec<&str> = match &vendor_filter {
-        Some(v) => vec![v.as_str()],
+        // The registered id, so `--vendor ACME` digs `acme` and everything
+        // below (baselines, settings, credentials, events) uses that id. An
+        // unknown name falls through as typed and is reported as typed.
+        Some(v) => vec![registry.resolve_id(v).unwrap_or(v.as_str())],
         // No explicit --vendor: honor [vendors].enabled from config if the
         // user set it (a narrowing allowlist over whatever vendors were
         // compiled in via Cargo features); an empty list means no
@@ -576,6 +579,58 @@ mod tests {
         dig(&registry, &store, &sub, None, false).await.unwrap();
         assert_eq!(store.all_current("acme").await.unwrap().len(), 1);
         assert_eq!(store.all_current("globex").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn vendor_is_matched_ignoring_case_and_the_registered_id_is_used() {
+        let store = memory_store().await;
+        let plugin = MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]);
+        let releases = plugin.releases.clone();
+        let registry = registry(vec![plugin, MockPlugin::new("globex", vec![])]);
+        let sub = RecordingSubscriber::default();
+
+        assert_eq!(registry.resolve_id("ACME"), Some("acme"));
+        assert_eq!(registry.resolve_id("Acme"), Some("acme"));
+        assert_eq!(registry.resolve_id("acme"), Some("acme"));
+        assert_eq!(registry.resolve_id("acm"), None);
+
+        dig(&registry, &store, &sub, Some("ACME"), false)
+            .await
+            .unwrap();
+        // Everything is stored and tracked under the registered id, not the
+        // spelling that was typed.
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 1);
+        assert!(store.all_current("ACME").await.unwrap().is_empty());
+        assert!(store.has_completed_baseline("acme").await.unwrap());
+        assert!(!store.has_completed_baseline("ACME").await.unwrap());
+
+        // `--redig` clears the registered id's baseline too.
+        releases
+            .lock()
+            .unwrap()
+            .push(release("widget", "2.0", &[2, 0], 2));
+        dig(&registry, &store, &sub, Some("AcMe"), true)
+            .await
+            .unwrap();
+        assert!(sub.take().is_empty(), "--redig must behave like a baseline");
+        assert_eq!(store.all_current("acme").await.unwrap().len(), 2);
+        assert!(store.has_completed_baseline("acme").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_unknown_vendor_is_reported_as_it_was_typed() {
+        let store = memory_store().await;
+        let registry = registry(vec![MockPlugin::new("acme", vec![])]);
+        let err = dig(
+            &registry,
+            &store,
+            &RecordingSubscriber::default(),
+            Some("NoPe"),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("unknown vendor: NoPe"), "{err}");
     }
 
     #[tokio::test]

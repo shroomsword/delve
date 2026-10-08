@@ -182,6 +182,13 @@ read the same database, so run them as the user the cron job runs as, or with
 the same `--config`. You can also run `dig` by hand at any time, say to check
 for a release before the next scheduled run.
 
+Matching ignores letter case: `--vendor UniFi`, `--device-family uap` and
+`--hardware u7pg2` find what `--vendor unifi`, `UAP` and `U7PG2` do, and the
+output shows the case the vendor published. (ASCII letters only, which is all
+the vendor ids, product names and model codes use.) If two stored names differ
+only in case, a selector that matches both lists both in `catalog`, and
+`provenance` and `unearth` refuse it as ambiguous instead of picking one.
+
 ```
 # Check for new releases now
 delve dig --vendor unifi
@@ -1142,6 +1149,9 @@ delve dig --vendor cisco           # just one vendor
 delve dig --vendor cisco --redig   # clear cisco's baseline first, then dig fresh
 delve dig --vendor cisco --allow-unreviewed   # dev only: run despite tos_reviewed: false
 ```
+
+`--vendor` ignores case (`--vendor Cisco` digs `cisco`); a name that matches no
+vendor fails with `unknown vendor: <name as typed>`.
 
 `--allow-unreviewed` is a deliberate escape hatch for exercising a plugin's
 `discover`/`metadata` against a real site before its ToS review is recorded.

@@ -287,6 +287,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_selector_flag_ignores_case_and_the_listing_shows_stored_values() {
+        let store = seeded_store().await;
+        // A version with letters in it, as vendors publish (`17.9.4a`).
+        seed(
+            &store,
+            MockPlugin::new("initech", vec![release("gizmo", "3.0-RC1", &[3, 0], 9)]),
+        )
+        .await;
+        let exact = |f: fn(&mut SelectorArgs)| {
+            let mut s = selector();
+            f(&mut s);
+            s
+        };
+        let cases: Vec<(&str, SelectorArgs, SelectorArgs)> = vec![
+            (
+                "vendor",
+                exact(|s| s.vendor = Some("globex".into())),
+                exact(|s| s.vendor = Some("GlobEx".into())),
+            ),
+            (
+                "device family",
+                exact(|s| s.device_family = Some("widget".into())),
+                exact(|s| s.device_family = Some("WIDGET".into())),
+            ),
+            (
+                "hardware",
+                exact(|s| s.hardware = vec!["rev-b".into()]),
+                exact(|s| s.hardware = vec!["REV-B".into()]),
+            ),
+            (
+                "version",
+                exact(|s| s.version = Some("3.0-RC1".into())),
+                exact(|s| s.version = Some("3.0-rc1".into())),
+            ),
+            (
+                "all together",
+                exact(|s| {
+                    s.vendor = Some("acme".into());
+                    s.device_family = Some("widget".into());
+                    s.hardware = vec!["rev-a".into()];
+                    s.version = Some("1.2".into());
+                }),
+                exact(|s| {
+                    s.vendor = Some("ACME".into());
+                    s.device_family = Some("Widget".into());
+                    s.hardware = vec!["Rev-A".into()];
+                    s.version = Some("1.2".into());
+                }),
+            ),
+            (
+                "latest",
+                exact(|s| {
+                    s.vendor = Some("acme".into());
+                    s.latest = true;
+                }),
+                exact(|s| {
+                    s.vendor = Some("AcMe".into());
+                    s.latest = true;
+                }),
+            ),
+        ];
+        for (what, lower, mixed) in cases {
+            let want = catalog(&store, lower, false).await.unwrap();
+            let got = catalog(&store, mixed, false).await.unwrap();
+            assert_eq!(got, want, "{what}");
+            assert!(!rows(&got).is_empty(), "{what}: {got}");
+            // Stored case, not what was typed.
+            assert!(
+                !got.contains("GlobEx") && !got.contains("WIDGET"),
+                "{what}: {got}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn selector_flags_narrow_the_listing() {
         let store = seeded_store().await;
 
