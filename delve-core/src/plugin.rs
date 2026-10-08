@@ -133,6 +133,24 @@ impl PluginRegistry {
         self.plugins.get(vendor_id).map(|b| b.as_ref())
     }
 
+    /// The registered vendor id that `typed` names, ignoring ASCII case, so
+    /// `--vendor UniFi` reaches `unifi`. Callers must go on with the id
+    /// returned, not what was typed: stored data, baselines and settings are
+    /// keyed by the registered id. An exact match wins if two ids ever
+    /// differed only by case.
+    pub fn resolve_id(&self, typed: &str) -> Option<&'static str> {
+        self.plugins
+            .keys()
+            .copied()
+            .find(|id| *id == typed)
+            .or_else(|| {
+                self.plugins
+                    .keys()
+                    .copied()
+                    .find(|id| id.eq_ignore_ascii_case(typed))
+            })
+    }
+
     pub fn vendor_ids(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.plugins.keys().copied()
     }

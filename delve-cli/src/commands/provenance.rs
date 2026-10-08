@@ -217,6 +217,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_selector_flag_ignores_case() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+        )
+        .await;
+
+        let mut s = selector();
+        s.vendor = Some("ACME".into());
+        s.device_family = Some("Widget".into());
+        s.hardware = vec!["REV-A".into()];
+        s.version = Some("1.0".into());
+        let out = provenance(&store, s).await.unwrap();
+        assert_eq!(out.lines().count(), 2, "{out}");
+
+        // `--latest` instead of a version.
+        let mut s = selector();
+        s.vendor = Some("aCmE".into());
+        s.device_family = Some("WIDGET".into());
+        s.hardware = vec!["rev-A".into()];
+        s.latest = true;
+        let out = provenance(&store, s).await.unwrap();
+        assert_eq!(out.lines().count(), 2, "{out}");
+    }
+
+    #[tokio::test]
+    async fn names_that_differ_only_in_case_make_the_selector_ambiguous() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new(
+                "acme",
+                vec![
+                    release("Widget", "1.0", &[1, 0], 1),
+                    release("widget", "1.0", &[1, 0], 2),
+                ],
+            ),
+        )
+        .await;
+
+        let mut s = selector();
+        s.vendor = Some("acme".into());
+        s.device_family = Some("WIDGET".into());
+        s.version = Some("1.0".into());
+        let err = provenance(&store, s).await.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<StoreError>(),
+                Some(StoreError::Ambiguous(2))
+            ),
+            "{err}"
+        );
+
+        // The exact spelling still can't pick one of them: it is the same
+        // question, and the answer is the same two entries.
+        let mut s = selector();
+        s.vendor = Some("acme".into());
+        s.device_family = Some("widget".into());
+        s.version = Some("1.0".into());
+        assert!(provenance(&store, s).await.is_err());
+    }
+
+    #[tokio::test]
     async fn id_alone_resolves_the_entry_and_ignores_other_entries() {
         let store = memory_store().await;
         seed(

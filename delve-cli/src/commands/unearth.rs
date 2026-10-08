@@ -258,6 +258,60 @@ pub async fn run(
 mod tests {
     use super::*;
 
+    /// `unearth` resolves its selector the same way `catalog` does, so every
+    /// flag ignores case. The mock plugin cannot download, so a selector that
+    /// resolved gets as far as the fetch and fails there, while one that
+    /// matched nothing fails before it.
+    #[tokio::test]
+    async fn every_selector_flag_ignores_case() {
+        use crate::commands::test_support::*;
+
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+        )
+        .await;
+        let registry =
+            PluginRegistry::from_plugins(vec![Box::new(MockPlugin::new("acme", vec![]))]);
+        let out = std::env::temp_dir().join(format!("delve-unearth-{}", uuid::Uuid::new_v4()));
+
+        let attempt = |f: fn(&mut SelectorArgs)| {
+            let (registry, store, out) = (&registry, &store, out.clone());
+            async move {
+                let mut s = selector();
+                f(&mut s);
+                run(registry, store, &config(""), s, out, false)
+                    .await
+                    .unwrap_err()
+                    .to_string()
+            }
+        };
+
+        let matched = [
+            attempt(|s| s.vendor = Some("ACME".into())).await,
+            attempt(|s| s.device_family = Some("WIDGET".into())).await,
+            attempt(|s| s.hardware = vec!["Rev-A".into()]).await,
+            attempt(|s| s.version = Some("1.0".into())).await,
+            attempt(|s| {
+                s.vendor = Some("Acme".into());
+                s.device_family = Some("Widget".into());
+                s.hardware = vec!["REV-A".into()];
+                s.version = Some("1.0".into());
+            })
+            .await,
+        ];
+        for err in matched {
+            assert_ne!(
+                err, "no matching firmware entry",
+                "the selector should match"
+            );
+        }
+        let missed = attempt(|s| s.vendor = Some("ACMEE".into())).await;
+        assert_eq!(missed, "no matching firmware entry");
+        let _ = std::fs::remove_file(&out);
+    }
+
     /// Confirms the real sha2 crate is actually wired up correctly — not
     /// just that it compiles, but that it produces the standard published
     /// test vector for SHA-256("abc"). Catches, e.g., a byte-order or
