@@ -401,6 +401,8 @@ dependencies = [
 name = "delve-cli"
 version = "0.1.0"
 dependencies = [
+ "anstream",
+ "anstyle",
  "anyhow",
  "async-trait",
  "chrono",

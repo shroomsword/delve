@@ -14,6 +14,19 @@ use vendor_cisco as _;
 #[cfg(feature = "vendor-unifi")]
 use vendor_unifi as _;
 
+/// Stdout for output that may be colored. The commands always write their
+/// styles; this strips them unless `--color` and the environment say a
+/// terminal wants them (`auto` honours `NO_COLOR`, `TERM=dumb` and whether
+/// stdout is a terminal; `always` does not).
+fn stdout(choice: clap::ColorChoice) -> anstream::AutoStream<std::io::StdoutLock<'static>> {
+    let choice = match choice {
+        clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
+        clap::ColorChoice::Always => anstream::ColorChoice::Always,
+        clap::ColorChoice::Never => anstream::ColorChoice::Never,
+    };
+    anstream::AutoStream::new(std::io::stdout().lock(), choice)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -38,11 +51,11 @@ async fn main() -> anyhow::Result<()> {
             allow_unreviewed,
         } => commands::dig::run(&config, &registry, &store, vendor, redig, allow_unreviewed).await,
         Command::Catalog { selector, long } => {
-            commands::catalog::run(&store, selector, long, &mut std::io::stdout().lock()).await
+            commands::catalog::run(&store, selector, long, &mut stdout(cli.color)).await
         }
         Command::Provenance { selector } => {
             let time = commands::timestamp::Display::from_utc_flag(cli.utc);
-            commands::provenance::run(&store, selector, time, &mut std::io::stdout().lock()).await
+            commands::provenance::run(&store, selector, time, &mut stdout(cli.color)).await
         }
         Command::Unearth {
             selector,
