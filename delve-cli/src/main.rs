@@ -32,22 +32,25 @@ fn stdout(choice: clap::ColorChoice) -> anstream::AutoStream<std::io::StdoutLock
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Before logging starts: `--utc` picks the log clock, and a usage error
+    // is clap's to print and exit on.
+    let cli = Cli::parse();
+    let clock = report::Clock::new(cli.utc);
     tracing_subscriber::fmt()
-        .with_timer(report::timer())
+        .with_timer(clock)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    match run().await {
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            report::write_fatal(&err);
+            report::write_fatal(&clock, &err);
             ExitCode::FAILURE
         }
     }
 }
 
-async fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+async fn run(cli: Cli) -> anyhow::Result<()> {
     // Before loading the config: survey writes it, and can replace one that
     // doesn't parse.
     if let Command::Survey { print, defaults } = cli.command {

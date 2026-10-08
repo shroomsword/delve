@@ -29,8 +29,9 @@ pub struct Cli {
     )]
     pub color: clap::ColorChoice,
 
-    /// Show timestamps in UTC instead of in the local timezone. Use it in
-    /// scripts that parse the output.
+    /// Show timestamps in UTC instead of in the local timezone: in tables,
+    /// in log lines and in the error that ends a failed run. Use it in
+    /// scripts that parse the output or the log.
     #[arg(long, global = true)]
     pub utc: bool,
 
