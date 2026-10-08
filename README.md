@@ -144,6 +144,12 @@ part is for:
   setting that still shows it.
 - **`>> ... 2>&1`** sends the log to a file. delve logs to stderr. Rotate the
   file with `logrotate` or similar, since it grows with every run.
+- **Log times** are in the machine's local timezone with the numeric offset
+  (`2026-10-05T14:44:18.740169-04:00`), like the times in `provenance`. The
+  offset changes with daylight saving time, so a log that spans a clock change
+  has both. For a log in UTC (`2026-10-05T18:44:18.740169Z`), which sorts and
+  parses the same on every machine, put `--utc` on the command
+  (`... delve --utc --config ... dig`).
 - **Credentials** are read from the environment, which cron doesn't inherit
   from your login shell. Put the variables that `survey` listed at the top of
   the crontab (a line of its own above the entries, such as
@@ -157,7 +163,7 @@ part is for:
 **Exit status.** `dig` exits 0 when every vendor it ran succeeded, and 1 if
 any failed, after the rest have run and subscribers have been told what the
 others found. The error is on stderr, with the time in front like the log
-lines (`2026-10-05T03:17:01.031842Z Error: dig failed for: unifi`), and
+lines (`2026-10-05T03:17:01.031842-04:00 Error: dig failed for: unifi`), and
 logged. With the output redirected to a file, as above, cron has nothing to
 mail you, so to be told of a failed run chain a check onto the command, such as
 `&& curl -fsS https://hc-ping.com/<id>` for a dead-man's-switch service that
