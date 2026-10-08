@@ -156,7 +156,8 @@ part is for:
 
 **Exit status.** `dig` exits 0 when every vendor it ran succeeded, and 1 if
 any failed, after the rest have run and subscribers have been told what the
-others found. The error is on stderr (`Error: dig failed for: unifi`), and
+others found. The error is on stderr, with the time in front like the log
+lines (`2026-10-05T03:17:01.031842Z Error: dig failed for: unifi`), and
 logged. With the output redirected to a file, as above, cron has nothing to
 mail you, so to be told of a failed run chain a check onto the command, such as
 `&& curl -fsS https://hc-ping.com/<id>` for a dead-man's-switch service that
