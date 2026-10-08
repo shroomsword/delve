@@ -5,7 +5,8 @@ use std::io::Write;
 use delve_core::store::{FirmwareKey, MetadataStore};
 
 use crate::cli::SelectorArgs;
-use crate::commands::table::write_table;
+use crate::commands::style::{DIM, HEADER};
+use crate::commands::table::{write_table, Cell};
 use crate::commands::timestamp::Display;
 
 pub async fn run(
@@ -30,7 +31,7 @@ pub async fn run(
     let key = FirmwareKey::from_metadata(&entry);
     let revisions = store.history(&key).await?;
 
-    let rows: Vec<Vec<String>> = revisions
+    let rows: Vec<Vec<Cell>> = revisions
         .iter()
         .map(|rev| {
             let hash = rev
@@ -39,17 +40,22 @@ pub async fn run(
                 .map(|h| h.iter().map(|b| format!("{:02x}", b)).collect::<String>())
                 .unwrap_or_else(|| "-".into());
             vec![
-                time.format(rev.observed_at),
-                rev.run_id.to_string(),
-                format!(
+                Cell::styled(time.format(rev.observed_at), DIM),
+                Cell::styled(rev.run_id.to_string(), DIM),
+                Cell::plain(format!(
                     "{} / {}",
                     rev.metadata.version.raw,
                     &hash[..hash.len().min(12)]
-                ),
+                )),
             ]
         })
         .collect();
-    write_table(out, &["OBSERVED_AT", "RUN_ID", "VERSION / HASH"], &rows)?;
+    write_table(
+        out,
+        &["OBSERVED_AT", "RUN_ID", "VERSION / HASH"],
+        HEADER,
+        &rows,
+    )?;
 
     Ok(())
 }
@@ -65,7 +71,13 @@ mod tests {
         selector: SelectorArgs,
     ) -> anyhow::Result<String> {
         let mut out = Vec::new();
-        run(store, selector, Display::Utc, &mut out).await?;
+        run(
+            store,
+            selector,
+            Display::Utc,
+            &mut anstream::StripStream::new(&mut out),
+        )
+        .await?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -162,9 +174,14 @@ mod tests {
         };
 
         let mut local = Vec::new();
-        run(&store, widget_1_0(), Display::Local, &mut local)
-            .await
-            .unwrap();
+        run(
+            &store,
+            widget_1_0(),
+            Display::Local,
+            &mut anstream::StripStream::new(&mut local),
+        )
+        .await
+        .unwrap();
         let local = first_cell(&String::from_utf8(local).unwrap());
         let utc = first_cell(&provenance(&store, widget_1_0()).await.unwrap());
         assert!(utc.ends_with("+00:00") && utc.contains('.'), "{utc}");
@@ -177,6 +194,26 @@ mod tests {
         assert_eq!(local_time, utc_time, "{local} vs {utc}");
         let fraction = |s: &str| s.split_once('.').map(|(_, f)| f[..f.len() - 6].to_string());
         assert_eq!(fraction(&local), fraction(&utc), "{local} vs {utc}");
+    }
+
+    #[tokio::test]
+    async fn the_table_is_styled_and_stripping_leaves_the_plain_text() {
+        let store = memory_store().await;
+        seed(
+            &store,
+            MockPlugin::new("acme", vec![release("widget", "1.0", &[1, 0], 1)]),
+        )
+        .await;
+        let mut styled = Vec::new();
+        run(&store, widget_1_0(), Display::Utc, &mut styled)
+            .await
+            .unwrap();
+        let styled = String::from_utf8(styled).unwrap();
+        assert!(styled.contains('\x1b'), "{styled:?}");
+        assert_eq!(
+            anstream::adapter::strip_str(&styled).to_string(),
+            provenance(&store, widget_1_0()).await.unwrap()
+        );
     }
 
     #[tokio::test]

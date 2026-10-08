@@ -39,6 +39,10 @@ lettre = { version = "0.11", default-features = false, features = ["builder", "s
 reqwest = { version = "0.12", default-features = false, features = ["json", "socks", "rustls-tls", "gzip"] }
 inventory = "0.3"
 clap = { version = "4", features = ["derive"] }
+# Color for the tables `catalog` and `provenance` print. anstream decides whether stdout gets escape
+# sequences (terminal, NO_COLOR, TERM=dumb, Windows consoles) and strips them when it should not.
+anstream = "1"
+anstyle = "1"
 toml = "0.8"
 dirs = "5"
 futures = "0.3"

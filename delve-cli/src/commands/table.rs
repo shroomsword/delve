@@ -3,23 +3,48 @@
 //! Fixed `{:<N}` widths pushed a row out of line as soon as a value outgrew
 //! its column (an RFC 3339 timestamp with nanoseconds is 35 characters), so
 //! every table goes through here instead.
+//!
+//! Cells can be styled. Widths and padding are worked out from the text alone
+//! and the style wraps just the text, so escape sequences never move a column.
 
 use std::io::{self, Write};
+
+use anstyle::Style;
 
 /// Columns are separated by this much space.
 const GAP: &str = "  ";
 
-/// Writes `headers` and then `rows`, one line each. Every column but the last
-/// is padded to the widest value in it, header included; the last column is
-/// written as it is, so no line ends in spaces. Width is counted in
-/// characters, as `format!("{:<N}")` does, not in bytes.
+/// One value in a table.
+pub(crate) struct Cell {
+    text: String,
+    style: Style,
+}
+
+impl Cell {
+    pub(crate) fn plain(text: impl Into<String>) -> Self {
+        Self::styled(text, Style::new())
+    }
+
+    pub(crate) fn styled(text: impl Into<String>, style: Style) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
+/// Writes `headers` (in `header_style`) and then `rows`, one line each. Every
+/// column but the last is padded to the widest value in it, header included;
+/// the last column is written as it is, so no line ends in spaces. Width is
+/// counted in characters, as `format!("{:<N}")` does, not in bytes.
 ///
 /// A row shorter than the header leaves its remaining cells empty, and cells
 /// beyond the header's columns are ignored.
 pub(crate) fn write_table(
     out: &mut dyn Write,
     headers: &[&str],
-    rows: &[Vec<String>],
+    header_style: Style,
+    rows: &[Vec<Cell>],
 ) -> io::Result<()> {
     let widths: Vec<usize> = headers
         .iter()
@@ -27,34 +52,38 @@ pub(crate) fn write_table(
         .map(|(i, h)| {
             rows.iter()
                 .filter_map(|r| r.get(i))
-                .map(|c| c.chars().count())
+                .map(|c| c.text.chars().count())
                 .fold(h.chars().count(), usize::max)
         })
         .collect();
 
-    write_line(out, &widths, headers.iter().copied())?;
+    let header: Vec<Cell> = headers
+        .iter()
+        .map(|h| Cell::styled(*h, header_style))
+        .collect();
+    write_line(out, &widths, &header)?;
     for row in rows {
-        write_line(out, &widths, (0..widths.len()).map(|i| cell(row, i)))?;
+        write_line(out, &widths, row)?;
     }
     Ok(())
 }
 
-fn cell(row: &[String], i: usize) -> &str {
-    row.get(i).map_or("", String::as_str)
-}
-
-fn write_line<'a>(
-    out: &mut dyn Write,
-    widths: &[usize],
-    cells: impl Iterator<Item = &'a str>,
-) -> io::Result<()> {
+fn write_line(out: &mut dyn Write, widths: &[usize], cells: &[Cell]) -> io::Result<()> {
     let last = widths.len().saturating_sub(1);
     let mut line = String::new();
-    for (i, (text, width)) in cells.zip(widths).enumerate() {
+    for (i, width) in widths.iter().enumerate() {
         if i > 0 {
             line.push_str(GAP);
         }
-        line.push_str(text);
+        let Some(cell) = cells.get(i).filter(|c| !c.text.is_empty()) else {
+            // Nothing to show; padding for the next column is still needed.
+            if i < last {
+                line.extend(std::iter::repeat_n(' ', *width));
+            }
+            continue;
+        };
+        let Cell { text, style } = cell;
+        line.push_str(&format!("{style}{text}{style:#}"));
         if i < last {
             let pad = width.saturating_sub(text.chars().count());
             line.extend(std::iter::repeat_n(' ', pad));
@@ -69,12 +98,12 @@ mod tests {
     use super::*;
 
     fn table(headers: &[&str], rows: &[&[&str]]) -> String {
-        let rows: Vec<Vec<String>> = rows
+        let rows: Vec<Vec<Cell>> = rows
             .iter()
-            .map(|r| r.iter().map(ToString::to_string).collect())
+            .map(|r| r.iter().map(|c| Cell::plain(*c)).collect())
             .collect();
         let mut out = Vec::new();
-        write_table(&mut out, headers, &rows).unwrap();
+        write_table(&mut out, headers, Style::new(), &rows).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -128,5 +157,36 @@ mod tests {
     #[test]
     fn no_rows_still_prints_the_header() {
         assert_eq!(table(&["A", "B"], &[]), "A  B\n");
+    }
+
+    #[test]
+    fn styles_wrap_the_text_and_leave_the_layout_alone() {
+        let bold = Style::new().bold();
+        let rows = vec![
+            vec![Cell::styled("a", bold), Cell::plain("1")],
+            vec![Cell::plain("longer"), Cell::styled("2", bold)],
+        ];
+        let mut out = Vec::new();
+        write_table(&mut out, &["NAME", "N"], bold, &rows).unwrap();
+        let styled = String::from_utf8(out).unwrap();
+        assert!(styled.contains('\x1b'), "{styled:?}");
+
+        // Without the escapes it is the table a plain run prints.
+        let stripped = anstream::adapter::strip_str(&styled).to_string();
+        assert_eq!(
+            stripped,
+            table(&["NAME", "N"], &[&["a", "1"], &["longer", "2"]])
+        );
+    }
+
+    #[test]
+    fn an_empty_styled_cell_writes_no_escapes_and_no_trailing_space() {
+        let rows = vec![vec![
+            Cell::plain("1"),
+            Cell::styled("", Style::new().bold()),
+        ]];
+        let mut out = Vec::new();
+        write_table(&mut out, &["A", "B"], Style::new(), &rows).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "A  B\n1\n");
     }
 }

@@ -2,10 +2,15 @@
 
 use std::io::Write;
 
+use anstyle::Style;
 use delve_core::store::MetadataStore;
 
 use crate::cli::SelectorArgs;
-use crate::commands::table::write_table;
+use crate::commands::style::{DIM, HEADER, STRONG};
+use crate::commands::table::{write_table, Cell};
+
+/// The long view's labels are padded to this width, so the values line up.
+const LABEL_WIDTH: usize = 16;
 
 pub async fn run(
     store: &dyn MetadataStore,
@@ -23,46 +28,59 @@ pub async fn run(
     if long {
         for s in &entries {
             let e = &s.metadata;
-            writeln!(out, "id:             {}", s.id)?;
-            writeln!(out, "vendor:         {}", e.vendor)?;
+            field(out, "id:", s.id, DIM)?;
+            field(out, "vendor:", &e.vendor, Style::new())?;
             if let Some(name) = &e.display_name {
-                writeln!(out, "name:           {name}")?;
+                field(out, "name:", name, Style::new())?;
             }
-            writeln!(out, "device_family:  {}", e.device_family)?;
-            writeln!(out, "source_url:     {}", e.source_url)?;
-            writeln!(out, "version:        {}", e.version.raw)?;
-            writeln!(out, "hardware:       {}", e.hardware_targets.join(", "))?;
-            writeln!(out, "release_date:   {:?}", e.release_date)?;
-            writeln!(
+            field(out, "device_family:", &e.device_family, Style::new())?;
+            field(out, "source_url:", &e.source_url, Style::new())?;
+            field(out, "version:", &e.version.raw, STRONG)?;
+            field(
                 out,
-                "sha256:         {}",
+                "hardware:",
+                e.hardware_targets.join(", "),
+                Style::new(),
+            )?;
+            field(
+                out,
+                "release_date:",
+                format!("{:?}", e.release_date),
+                Style::new(),
+            )?;
+            field(
+                out,
+                "sha256:",
                 e.sha256
                     .map(|h| hex_string(&h))
-                    .unwrap_or_else(|| "-".into())
+                    .unwrap_or_else(|| "-".into()),
+                DIM,
             )?;
-            writeln!(
+            field(
                 out,
-                "release_notes:  {}",
+                "release_notes:",
                 e.release_notes_url
                     .as_ref()
                     .map(|u| u.as_str())
-                    .unwrap_or("-")
+                    .unwrap_or("-"),
+                Style::new(),
             )?;
-            writeln!(
+            field(
                 out,
-                "signature:      {}",
+                "signature:",
                 e.signature
                     .as_ref()
                     .map(|s| format!("{} (verified: {})", s.scheme, s.verified))
-                    .unwrap_or_else(|| "-".into())
+                    .unwrap_or_else(|| "-".into()),
+                Style::new(),
             )?;
-            writeln!(out, "---")?;
+            writeln!(out, "{DIM}---{DIM:#}")?;
         }
     } else {
         // Default view: the most useful fields only, one line per entry. The
         // display name is left to `--long`: a NAME column took the table from
         // 134 to 171 characters wide.
-        let rows: Vec<Vec<String>> = entries
+        let rows: Vec<Vec<Cell>> = entries
             .iter()
             .map(|s| {
                 let e = &s.metadata;
@@ -71,15 +89,17 @@ pub async fn run(
                     .map(|h| hex_string(&h)[..12].to_string())
                     .unwrap_or_else(|| "-".into());
                 vec![
-                    s.id.to_string(),
-                    e.vendor.clone(),
-                    e.device_family.clone(),
-                    e.version.raw.clone(),
-                    e.hardware_targets.join("+"),
-                    e.release_date
-                        .map(|d| d.to_string())
-                        .unwrap_or_else(|| "-".into()),
-                    short_hash,
+                    Cell::styled(s.id.to_string(), DIM),
+                    Cell::plain(e.vendor.clone()),
+                    Cell::plain(e.device_family.clone()),
+                    Cell::styled(e.version.raw.clone(), STRONG),
+                    Cell::plain(e.hardware_targets.join("+")),
+                    Cell::plain(
+                        e.release_date
+                            .map(|d| d.to_string())
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                    Cell::styled(short_hash, DIM),
                 ]
             })
             .collect();
@@ -94,11 +114,27 @@ pub async fn run(
                 "RELEASED",
                 "SHA256 (short)",
             ],
+            HEADER,
             &rows,
         )?;
     }
 
     Ok(())
+}
+
+/// One `label: value` line of the long view. The label is padded before it is
+/// styled, so values start in the same column with or without color.
+fn field(
+    out: &mut dyn Write,
+    label: &str,
+    value: impl std::fmt::Display,
+    style: Style,
+) -> std::io::Result<()> {
+    writeln!(
+        out,
+        "{DIM}{label}{DIM:#}{pad}{style}{value}{style:#}",
+        pad = " ".repeat(LABEL_WIDTH.saturating_sub(label.len()))
+    )
 }
 
 fn hex_string(bytes: &[u8; 32]) -> String {
@@ -117,8 +153,25 @@ mod tests {
         long: bool,
     ) -> anyhow::Result<String> {
         let mut out = Vec::new();
-        run(store, selector, long, &mut out).await?;
+        run(
+            store,
+            selector,
+            long,
+            &mut anstream::StripStream::new(&mut out),
+        )
+        .await?;
         Ok(String::from_utf8(out).unwrap())
+    }
+
+    /// What `catalog` writes before `--color` is applied: styles included.
+    async fn catalog_styled(
+        store: &dyn MetadataStore,
+        selector: SelectorArgs,
+        long: bool,
+    ) -> String {
+        let mut out = Vec::new();
+        run(store, selector, long, &mut out).await.unwrap();
+        String::from_utf8(out).unwrap()
     }
 
     /// Two vendors; acme's widget line has versions whose numeric order
@@ -205,6 +258,32 @@ mod tests {
             }
         }
         assert!(out.lines().all(|l| !l.ends_with(' ')), "{out}");
+    }
+
+    #[tokio::test]
+    async fn both_views_are_styled_and_stripping_leaves_the_plain_text() {
+        let store = seeded_store().await;
+        for long in [false, true] {
+            let styled = catalog_styled(&store, selector(), long).await;
+            let plain = catalog(&store, selector(), long).await.unwrap();
+            assert!(styled.contains('\x1b'), "long={long}: {styled:?}");
+            assert!(!plain.contains('\x1b'), "long={long}: {plain:?}");
+            assert_eq!(
+                anstream::adapter::strip_str(&styled).to_string(),
+                plain,
+                "long={long}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn long_view_values_start_in_one_column() {
+        let store = seeded_store().await;
+        let out = catalog(&store, selector(), true).await.unwrap();
+        for line in out.lines().filter(|l| *l != "---") {
+            let value = line.split_once(' ').unwrap().1.trim_start();
+            assert_eq!(line.len() - value.len(), 16, "{line:?}");
+        }
     }
 
     #[tokio::test]

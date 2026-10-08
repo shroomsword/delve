@@ -18,6 +18,8 @@ vendor-unifi = { path = "../delve-vendors/vendor-unifi", optional = true }
 
 tokio.workspace = true
 clap.workspace = true
+anstream.workspace = true
+anstyle.workspace = true
 toml.workspace = true
 dirs.workspace = true
 serde.workspace = true

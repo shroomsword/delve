@@ -1101,6 +1101,17 @@ config), `dig` scrapes a vendor site (the excavation), `catalog` lists
 what's been found, `provenance` traces one find's documented history,
 `unearth` pulls the actual physical artifact out.
 
+Two flags apply to every command: `--utc` (see [`provenance`](#provenance))
+and `--color <auto|always|never>`. `catalog` and `provenance` print their
+headings and identifiers in bold and dim styles when stdout is a terminal;
+the other commands print no color, so the flag does nothing for them yet.
+`auto`, the default, adds color only on a terminal, so piping into `grep` or
+redirecting to a file gives plain text, and it stays off when `NO_COLOR` is
+set or `TERM` is `dumb` (`CLICOLOR_FORCE=1` turns it on regardless).
+`--color=always` forces it even when piped, and over `NO_COLOR`, which
+`less -R` shows correctly; `--color=never` removes it entirely. Columns line
+up the same either way.
+
 ### `survey`
 
 Asks questions and writes `config.toml` — see [Creating the config

@@ -16,6 +16,19 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub config: Option<PathBuf>,
 
+    /// When to color output: `auto` colors only when writing to a terminal
+    /// (and not when `NO_COLOR` is set or `TERM` is `dumb`), `always` forces
+    /// it even when piped, `never` turns it off. Only `catalog` and
+    /// `provenance` use color so far; the other commands ignore this.
+    #[arg(
+        long,
+        global = true,
+        value_name = "WHEN",
+        value_enum,
+        default_value_t = clap::ColorChoice::Auto
+    )]
+    pub color: clap::ColorChoice,
+
     /// Show timestamps in UTC instead of in the local timezone. Use it in
     /// scripts that parse the output.
     #[arg(long, global = true)]
