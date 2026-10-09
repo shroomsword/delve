@@ -36,7 +36,11 @@ async fn main() -> ExitCode {
     // is clap's to print and exit on.
     let cli = Cli::parse();
     let clock = report::Clock::new(cli.utc);
+    // Logs go to stderr, as with other command-line tools: stdout is for the
+    // result of the command, so `delve catalog | grep ...` stays clean at any
+    // `RUST_LOG`. (The subscriber's default is stdout.)
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_timer(clock)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
