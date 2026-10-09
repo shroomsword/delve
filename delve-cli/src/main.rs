@@ -21,13 +21,18 @@ use vendor_unifi as _;
 /// styles; this strips them unless `--color` and the environment say a
 /// terminal wants them (`auto` honours `NO_COLOR`, `TERM=dumb` and whether
 /// stdout is a terminal; `always` does not).
-fn stdout(choice: clap::ColorChoice) -> anstream::AutoStream<std::io::StdoutLock<'static>> {
+///
+/// Wraps `Stdout`, which locks for each write, and not a held `StdoutLock`:
+/// the commands keep this stream across `.await`s while they query the store,
+/// and a lock held that long blocks anything else that writes to stdout, such
+/// as a log line from another thread, which then never lets the query finish.
+fn stdout(choice: clap::ColorChoice) -> anstream::AutoStream<std::io::Stdout> {
     let choice = match choice {
         clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
         clap::ColorChoice::Always => anstream::ColorChoice::Always,
         clap::ColorChoice::Never => anstream::ColorChoice::Never,
     };
-    anstream::AutoStream::new(std::io::stdout().lock(), choice)
+    anstream::AutoStream::new(std::io::stdout(), choice)
 }
 
 #[tokio::main]
@@ -84,5 +89,28 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             no_verify,
         } => commands::unearth::run(&registry, &store, &config, selector, out, no_verify).await,
         Command::Survey { .. } => unreachable!("survey ran before the config was loaded"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::stdout;
+
+    /// A command holds this stream across its `.await`s, so another thread
+    /// must still be able to write to stdout while it exists (#76).
+    #[test]
+    fn the_output_stream_does_not_hold_the_stdout_lock() {
+        let _out = stdout(clap::ColorChoice::Never);
+        let (done, locked) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _lock = std::io::stdout().lock();
+            let _ = done.send(());
+        });
+        locked
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stdout stayed locked while the output stream existed");
     }
 }
