@@ -98,6 +98,18 @@ fn an_error_from_a_running_command_is_stamped_too() {
     assert_eq!(rest, "Error: unknown vendor: nope");
 }
 
+/// The first and last lines of stderr, escapes stripped: the first is a log
+/// line (stderr carries the logs too), the last is the error that ended the
+/// run.
+fn first_and_last(out: &Output) -> (String, String) {
+    let stderr = String::from_utf8(out.stderr.clone()).unwrap();
+    let clean = anstream::adapter::strip_str(stderr.trim_end()).to_string();
+    let mut lines = clean.lines();
+    let first = lines.next().expect("a log line").to_string();
+    let last = clean.lines().last().unwrap().to_string();
+    (first, last)
+}
+
 #[test]
 fn utc_gives_the_z_form_to_the_error_and_the_log_lines() {
     let dir = Dir::new();
@@ -107,13 +119,10 @@ fn utc_gives_the_z_form_to_the_error_and_the_log_lines() {
         &[("RUST_LOG", "trace")],
         &["dig", "--vendor", "nope", "--utc"],
     );
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let log_line =
-        anstream::adapter::strip_str(stdout.lines().next().expect("a log line")).to_string();
-    let err = String::from_utf8(out.stderr).unwrap();
+    let (log_line, err) = first_and_last(&out);
 
     assert_eq!(shape(split_stamp(&log_line).0), UTC_SHAPE, "{log_line}");
-    assert_eq!(shape(split_stamp(err.trim_end()).0), UTC_SHAPE, "{err}");
+    assert_eq!(shape(split_stamp(&err).0), UTC_SHAPE, "{err}");
 }
 
 #[test]
@@ -124,16 +133,31 @@ fn the_error_and_the_log_lines_agree_on_the_default_local_form() {
         &[("RUST_LOG", "trace")],
         &["dig", "--vendor", "nope"],
     );
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let log_line =
-        anstream::adapter::strip_str(stdout.lines().next().expect("a log line")).to_string();
-    let err = String::from_utf8(out.stderr).unwrap();
+    let (log_line, err) = first_and_last(&out);
 
     assert_eq!(shape(split_stamp(&log_line).0), LOCAL_SHAPE, "{log_line}");
-    assert_eq!(shape(split_stamp(err.trim_end()).0), LOCAL_SHAPE, "{err}");
-    // The same offset on both streams.
+    assert_eq!(shape(split_stamp(&err).0), LOCAL_SHAPE, "{err}");
+    // The same offset on both.
     let offset = |s: &str| split_stamp(s).0[26..].to_string();
-    assert_eq!(offset(&log_line), offset(err.trim_end()));
+    assert_eq!(offset(&log_line), offset(&err));
+}
+
+#[test]
+fn log_lines_go_to_stderr_and_stdout_is_left_for_the_result() {
+    let dir = Dir::new();
+    let out = dir.run(
+        &dir.config(),
+        &[("RUST_LOG", "trace")],
+        &["dig", "--vendor", "nope"],
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let (log_line, err) = first_and_last(&out);
+    assert!(log_line.contains("DEBUG"), "{log_line}");
+    assert_eq!(split_stamp(&err).1, "Error: unknown vendor: nope");
 }
 
 /// chrono reads `TZ` on Unix; Windows ignores it and asks the OS.
@@ -143,19 +167,17 @@ fn the_machines_timezone_sets_the_offset_and_utc_overrides_it() {
     let dir = Dir::new();
     let kolkata = [("TZ", "Asia/Kolkata"), ("RUST_LOG", "trace")];
     let out = dir.run(&dir.config(), &kolkata, &["dig", "--vendor", "nope"]);
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    let log_line = anstream::adapter::strip_str(stdout.lines().next().unwrap()).to_string();
-    let err = String::from_utf8(out.stderr).unwrap();
+    let (log_line, err) = first_and_last(&out);
     assert!(split_stamp(&log_line).0.ends_with("+05:30"), "{log_line}");
-    assert!(split_stamp(err.trim_end()).0.ends_with("+05:30"), "{err}");
+    assert!(split_stamp(&err).0.ends_with("+05:30"), "{err}");
 
     let out = dir.run(
         &dir.config(),
         &kolkata,
         &["dig", "--vendor", "nope", "--utc"],
     );
-    let err = String::from_utf8(out.stderr).unwrap();
-    assert!(split_stamp(err.trim_end()).0.ends_with('Z'), "{err}");
+    let (_, err) = first_and_last(&out);
+    assert!(split_stamp(&err).0.ends_with('Z'), "{err}");
 }
 
 #[test]

@@ -142,8 +142,10 @@ part is for:
   a webhook or email that failed to send, which is logged as a warning and
   doesn't fail the dig, would go unnoticed. `RUST_LOG=warn` is the quietest
   setting that still shows it.
-- **`>> ... 2>&1`** sends the log to a file. delve logs to stderr. Rotate the
-  file with `logrotate` or similar, since it grows with every run.
+- **`>> ... 2>&1`** sends the log to a file. delve logs to stderr, and keeps
+  stdout for the result of a command, so `2>&1` is what brings the log, and
+  the error that ends a failed run, into the same file. Rotate the file with
+  `logrotate` or similar, since it grows with every run.
 - **Log times** are in the machine's local timezone with the numeric offset
   (`2026-10-05T14:44:18.740169-04:00`), like the times in `provenance`. The
   offset changes with daylight saving time, so a log that spans a clock change
