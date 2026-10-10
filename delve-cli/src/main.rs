@@ -17,6 +17,22 @@ use vendor_cisco as _;
 #[cfg(feature = "vendor-unifi")]
 use vendor_unifi as _;
 
+/// Whether log lines (on stderr) get color: the same rule as for output on
+/// stdout. `auto` is a terminal that supports it, without `NO_COLOR` or
+/// `TERM=dumb`, so a log redirected to a file or a pipe has no escape
+/// sequences; `always` and `never` are taken as given. The subscriber's own
+/// default is color on regardless of where the output goes.
+fn log_uses_color(choice: clap::ColorChoice) -> bool {
+    match choice {
+        clap::ColorChoice::Always => true,
+        clap::ColorChoice::Never => false,
+        clap::ColorChoice::Auto => {
+            anstream::AutoStream::<std::io::Stderr>::choice(&std::io::stderr())
+                != anstream::ColorChoice::Never
+        }
+    }
+}
+
 /// Stdout for output that may be colored. The commands always write their
 /// styles; this strips them unless `--color` and the environment say a
 /// terminal wants them (`auto` honours `NO_COLOR`, `TERM=dumb` and whether
@@ -46,6 +62,7 @@ async fn main() -> ExitCode {
     // `RUST_LOG`. (The subscriber's default is stdout.)
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
+        .with_ansi(log_uses_color(cli.color))
         .with_timer(clock)
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
