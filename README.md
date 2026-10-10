@@ -1119,14 +1119,16 @@ what's been found, `provenance` traces one find's documented history,
 
 Two flags apply to every command: `--utc` (see [`provenance`](#provenance))
 and `--color <auto|always|never>`. `catalog` and `provenance` print their
-headings and identifiers in bold and dim styles when stdout is a terminal;
-the other commands print no color, so the flag does nothing for them yet.
-`auto`, the default, adds color only on a terminal, so piping into `grep` or
-redirecting to a file gives plain text, and it stays off when `NO_COLOR` is
-set or `TERM` is `dumb` (`CLICOLOR_FORCE=1` turns it on regardless).
-`--color=always` forces it even when piped, and over `NO_COLOR`, which
-`less -R` shows correctly; `--color=never` removes it entirely. Columns line
-up the same either way.
+headings and identifiers in bold and dim styles when stdout is a terminal,
+and the log lines on stderr color their level and time on a terminal; the
+other output is plain. `auto`, the default, adds color only on a terminal, so
+piping into `grep` or redirecting to a file gives plain text, which is why a
+log file written by cron has no escape sequences in it, and it stays off when
+`NO_COLOR` is set or `TERM` is `dumb` (`CLICOLOR_FORCE=1` turns it on
+regardless). `--color=always` forces it even when piped, and over `NO_COLOR`,
+which `less -R` shows correctly; `--color=never` removes it entirely. Columns
+line up the same either way. The error that ends a failed run is never
+colored.
 
 ### `survey`
 
