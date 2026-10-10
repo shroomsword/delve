@@ -30,6 +30,9 @@ impl Dir {
             .arg(config)
             .args(args)
             .env_remove("RUST_LOG")
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR")
+            .env_remove("CLICOLOR_FORCE")
             // A backtrace after the error would add lines; CI sets these.
             .env_remove("RUST_BACKTRACE")
             .env_remove("RUST_LIB_BACKTRACE")
@@ -201,4 +204,63 @@ fn success_writes_nothing_to_stderr() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn redirected_log_lines_have_no_escape_sequences_by_default() {
+    let dir = Dir::new();
+    let out = dir.run(
+        &dir.config(),
+        &[("RUST_LOG", "trace")],
+        &["dig", "--vendor", "nope"],
+    );
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("DEBUG"), "{err}");
+    assert!(!err.contains('\x1b'), "{err:?}");
+}
+
+#[test]
+fn color_never_removes_escapes_even_when_the_environment_asks_for_them() {
+    let dir = Dir::new();
+    let out = dir.run(
+        &dir.config(),
+        &[("RUST_LOG", "trace"), ("CLICOLOR_FORCE", "1")],
+        &["dig", "--vendor", "nope", "--color=never"],
+    );
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(!err.contains('\x1b'), "{err:?}");
+}
+
+#[test]
+fn color_always_colors_the_log_lines_but_not_the_error_that_ends_the_run() {
+    let dir = Dir::new();
+    // Over `NO_COLOR` and a dumb terminal too, as for the tables.
+    let out = dir.run(
+        &dir.config(),
+        &[("RUST_LOG", "trace"), ("NO_COLOR", "1"), ("TERM", "dumb")],
+        &["dig", "--vendor", "nope", "--color", "always"],
+    );
+    let err = String::from_utf8(out.stderr).unwrap();
+    let lines: Vec<&str> = err.lines().collect();
+    assert!(lines[0].contains('\x1b'), "{:?}", lines[0]);
+    let last = lines.last().unwrap();
+    assert!(!last.contains('\x1b'), "{last:?}");
+    assert!(last.ends_with("Error: unknown vendor: nope"), "{last:?}");
+}
+
+#[test]
+fn no_color_is_honored_when_the_choice_is_auto() {
+    let dir = Dir::new();
+    // CLICOLOR_FORCE would colour a pipe, NO_COLOR outranks it.
+    let out = dir.run(
+        &dir.config(),
+        &[
+            ("RUST_LOG", "trace"),
+            ("NO_COLOR", "1"),
+            ("CLICOLOR_FORCE", "1"),
+        ],
+        &["dig", "--vendor", "nope"],
+    );
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(!err.contains('\x1b'), "{err:?}");
 }

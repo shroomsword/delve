@@ -18,8 +18,9 @@ pub struct Cli {
 
     /// When to color output: `auto` colors only when writing to a terminal
     /// (and not when `NO_COLOR` is set or `TERM` is `dumb`), `always` forces
-    /// it even when piped, `never` turns it off. Only `catalog` and
-    /// `provenance` use color so far; the other commands ignore this.
+    /// it even when piped, `never` turns it off. It applies to the tables
+    /// `catalog` and `provenance` print and to log lines on stderr; the other
+    /// commands print no color.
     #[arg(
         long,
         global = true,
