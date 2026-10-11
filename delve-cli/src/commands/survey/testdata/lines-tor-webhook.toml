@@ -27,7 +27,7 @@ client_secret = "env:CISCO_CLIENT_SECRET"
 default = "tor"
 # Identifies delve to vendor sites. Include a way to reach you, so a vendor
 # can ask before blocking you.
-user_agent = "delve/0.1.0 (contact: https://example.test/contact)"
+user_agent = "delve/0.2.0 (contact: https://example.test/contact)"
 # Seconds one request, and one connection, may take.
 # request_timeout_secs = 30
 # connect_timeout_secs = 10
