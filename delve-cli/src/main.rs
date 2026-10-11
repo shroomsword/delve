@@ -1,4 +1,5 @@
 mod cli;
+mod closed;
 mod commands;
 mod config;
 mod report;
@@ -42,13 +43,13 @@ fn log_uses_color(choice: clap::ColorChoice) -> bool {
 /// the commands keep this stream across `.await`s while they query the store,
 /// and a lock held that long blocks anything else that writes to stdout, such
 /// as a log line from another thread, which then never lets the query finish.
-fn stdout(choice: clap::ColorChoice) -> anstream::AutoStream<std::io::Stdout> {
+fn stdout(choice: clap::ColorChoice) -> closed::Stdout<anstream::AutoStream<std::io::Stdout>> {
     let choice = match choice {
         clap::ColorChoice::Auto => anstream::ColorChoice::Auto,
         clap::ColorChoice::Always => anstream::ColorChoice::Always,
         clap::ColorChoice::Never => anstream::ColorChoice::Never,
     };
-    anstream::AutoStream::new(std::io::stdout(), choice)
+    closed::Stdout::new(anstream::AutoStream::new(std::io::stdout(), choice))
 }
 
 #[tokio::main]
@@ -69,6 +70,8 @@ async fn main() -> ExitCode {
 
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
+        // Stopped reading, as `head -1` does: not a failure, and nothing to say.
+        Err(err) if closed::is_closed_stdout(&err) => ExitCode::SUCCESS,
         Err(err) => {
             report::write_fatal(&clock, &err);
             ExitCode::FAILURE
