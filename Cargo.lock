@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "delve-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anstream",
  "anstyle",
@@ -429,7 +429,7 @@ dependencies = [
 
 [[package]]
 name = "delve-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "delve-plugin-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -460,7 +460,7 @@ dependencies = [
 
 [[package]]
 name = "delve-store-sqlite"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2198,7 +2198,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "subscriber-email"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2210,7 +2210,7 @@ dependencies = [
 
 [[package]]
 name = "subscriber-webhook"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2651,7 +2651,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vendor-cisco"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "vendor-unifi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",

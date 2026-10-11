@@ -838,7 +838,7 @@ dropped or rate-limited.
 
 ```toml
 [transport]
-user_agent = "delve/0.1.0 (contact: ops@example.com)"
+user_agent = "delve/0.2.0 (contact: ops@example.com)"
 request_timeout_secs = 30   # default if unset
 connect_timeout_secs = 10   # default if unset
 ```
@@ -1331,7 +1331,7 @@ changed_fields = ["sha256"]                     # the default; see "Choosing wha
 
 [transport]
 default = "direct"                              # "direct" | "tor" | { socks5 = { addr = "..." } }
-user_agent = "delve/0.1.0 (contact: ops@example.com)"
+user_agent = "delve/0.2.0 (contact: ops@example.com)"
 request_timeout_secs = 30
 connect_timeout_secs = 10
 min_request_interval_ms = 1000
