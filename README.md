@@ -66,16 +66,40 @@ downloading it ([Looking things up by hand](#looking-things-up-by-hand)).
 
 ### Setup
 
-**1. Install it.** Build from source, with every feature on: the vendors and
-the subscribers are Cargo features, and a build without them has no vendor to
-dig (`no vendors enabled`).
+**1. Install it.** Either download a release archive or build from source. Both
+have every feature on: the vendors and the subscribers are Cargo features, and a
+build without them has no vendor to dig (`no vendors enabled`).
+
+*From a release.* Each [release](https://github.com/shroomsword/delve/releases)
+has an archive per platform, named `delve-<version>-<target>`, plus a
+`SHA256SUMS` file:
+
+| Platform | Target |
+|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-gnu` (`.tar.gz`) |
+| macOS, Apple Silicon | `aarch64-apple-darwin` (`.tar.gz`) |
+| macOS, Intel | `x86_64-apple-darwin` (`.tar.gz`) |
+| Windows x86_64 | `x86_64-pc-windows-msvc` (`.zip`) |
+
+Download the archive for your platform and `SHA256SUMS` into the same
+directory, check the archive against the list, then unpack it and put `delve`
+somewhere on your `PATH`. For v0.1.0 on Linux:
+
+```
+sha256sum --ignore-missing -c SHA256SUMS    # on macOS: shasum -a 256 --ignore-missing -c SHA256SUMS
+tar xzf delve-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+install delve-v0.1.0-x86_64-unknown-linux-gnu/delve ~/.local/bin/
+```
+
+The check must print `OK` for your archive. On Windows, compare the output of
+`Get-FileHash delve-v0.1.0-x86_64-pc-windows-msvc.zip` (PowerShell) with the
+archive's line in `SHA256SUMS`, then unpack the zip.
+
+*From source.* With a Rust toolchain, in a checkout of this repository:
 
 ```
 cargo install --path delve-cli --all-features --locked    # installs `delve` into ~/.cargo/bin
 ```
-
-CI builds release binaries for Linux, macOS (Apple Silicon and Intel) and
-Windows when a version tag is pushed, but none has been published yet.
 
 **2. Write the config file.** `delve survey` asks what to track, how to reach
 the vendors and where to send notifications, then writes
