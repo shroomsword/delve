@@ -71,7 +71,8 @@ pub fn software_types_url(mdf_id: &str) -> Url {
 #[serde(rename_all = "camelCase")]
 pub struct ProductNode {
     pub mdf_id: String,
-    /// `Category` for every node in the sample (the top of the tree).
+    /// `Category` near the top of the tree, then `Series`, then `Model` for a
+    /// product.
     #[serde(default)]
     pub meta_class: String,
     /// The node's name, such as `Switches`.
@@ -82,6 +83,10 @@ pub struct ProductNode {
     /// `Y` for a node that is a product, `N` for one with nodes below it.
     #[serde(default)]
     pub leaf_node_flag: String,
+    /// The nodes below this one, when the response carries them. A `Series`
+    /// does (with its `Model`s); a `Category` came with none in the sample.
+    #[serde(default)]
+    pub children: Vec<ProductNode>,
 }
 
 impl ProductNode {
@@ -146,6 +151,10 @@ impl Default for WalkLimits {
 /// Walks the tree below `root`, breadth first, and returns the products
 /// (leaf nodes) in the order they were found.
 ///
+/// Nodes that came with their children are read from those, not requested
+/// again: a response for a node whose children are series of models is the
+/// whole subtree in one request.
+///
 /// A node seen twice is read once. Running out of `limits.max_requests`
 /// before the walk is done fails with an error naming the limit rather than
 /// returning the part that was read, so a partial result is never taken for
@@ -155,12 +164,15 @@ pub async fn find_products(
     root: &str,
     limits: WalkLimits,
 ) -> Result<Vec<Product>, PluginError> {
-    let mut found = Vec::new();
-    let mut seen: HashSet<String> = HashSet::from([root.to_string()]);
-    let mut queue: VecDeque<(String, Vec<String>)> = VecDeque::from([(root.to_string(), vec![])]);
+    let mut walk = Walk {
+        max_depth: limits.max_depth,
+        found: Vec::new(),
+        seen: HashSet::from([root.to_string()]),
+        queue: VecDeque::from([(root.to_string(), vec![])]),
+    };
     let mut requests = 0;
 
-    while let Some((mdf_id, path)) = queue.pop_front() {
+    while let Some((mdf_id, path)) = walk.queue.pop_front() {
         if requests == limits.max_requests {
             return Err(PluginError::UnexpectedResponse(format!(
                 "the product walk below {root} needs more than {} requests; \
@@ -170,23 +182,45 @@ pub async fn find_products(
         }
         requests += 1;
         let body = source.products(&mdf_id).await?;
-        for node in parse_products(&body)? {
-            if !seen.insert(node.mdf_id.clone()) {
+        walk.take(parse_products(&body)?, &path);
+    }
+    Ok(walk.found)
+}
+
+/// The state of a [`find_products`] walk.
+struct Walk {
+    max_depth: usize,
+    found: Vec<Product>,
+    seen: HashSet<String>,
+    /// Nodes whose children still have to be requested, with their path.
+    queue: VecDeque<(String, Vec<String>)>,
+}
+
+impl Walk {
+    /// Takes the nodes of one level: products are kept, a node that has its
+    /// children is descended into, any other node is queued for a request.
+    fn take(&mut self, nodes: Vec<ProductNode>, path: &[String]) {
+        for mut node in nodes {
+            if !self.seen.insert(node.mdf_id.clone()) {
                 continue;
             }
-            let mut node_path = path.clone();
+            let mut node_path = path.to_vec();
             node_path.push(node.mdf_concept.clone());
             if node.is_leaf() {
-                found.push(Product {
+                self.found.push(Product {
                     node,
                     path: node_path,
                 });
-            } else if node_path.len() < limits.max_depth {
-                queue.push_back((node.mdf_id, node_path));
+            } else if node_path.len() < self.max_depth {
+                let children = std::mem::take(&mut node.children);
+                if children.is_empty() {
+                    self.queue.push_back((node.mdf_id, node_path));
+                } else {
+                    self.take(children, &node_path);
+                }
             }
         }
     }
-    Ok(found)
 }
 
 // ---- software types --------------------------------------------------
@@ -1126,5 +1160,85 @@ mod tests {
         assert_eq!(target.mdf_id, "286315874");
         assert_eq!(target.software_id, "282046477");
         assert_eq!(target.name, "Catalyst 9300 Switch");
+    }
+    const SWITCHES: &str =
+        include_str!("../testdata/catalog-products-small-business-switches.json");
+
+    #[test]
+    fn the_switches_response_is_nine_series_with_their_models_inline() {
+        let series = parse_products(SWITCHES).unwrap();
+        assert_eq!(series.len(), 9);
+        assert!(series
+            .iter()
+            .all(|n| n.meta_class == "Series" && !n.is_leaf()));
+        assert!(series.iter().all(|n| n.parent_mdf_id == "283018960"));
+        let models: Vec<_> = series.iter().flat_map(|s| &s.children).collect();
+        assert_eq!(models.len(), 172);
+        assert!(models
+            .iter()
+            .all(|n| n.meta_class == "Model" && n.is_leaf() && n.children.is_empty()));
+    }
+
+    #[test]
+    fn the_walk_takes_the_models_from_the_response_without_asking_for_them() {
+        let tree = Tree::new(&[("283018960", SWITCHES.to_string())]);
+        let products = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(find_products(&tree, "283018960", WalkLimits::default()))
+            .unwrap();
+        assert_eq!(products.len(), 172);
+        assert_eq!(
+            *tree.requests.lock().unwrap(),
+            ["283018960"],
+            "one request, not one per series"
+        );
+        let sf220 = products
+            .iter()
+            .find(|p| p.node.mdf_id == "284973399")
+            .unwrap();
+        assert_eq!(
+            sf220.node.mdf_concept,
+            "SF220-24 24-Port 10/100 Smart Switch"
+        );
+        assert_eq!(
+            sf220.path,
+            [
+                "220 Series Smart Switches",
+                "SF220-24 24-Port 10/100 Smart Switch"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_catalyst_2960_models_are_in_the_same_response_at_access_level_one() {
+        let series = parse_products(SWITCHES).unwrap();
+        let c2960 = series
+            .iter()
+            .find(|n| n.mdf_concept == "Catalyst 2960 Series Switches")
+            .unwrap();
+        let models: Vec<_> = c2960
+            .children
+            .iter()
+            .map(|m| m.mdf_concept.as_str())
+            .collect();
+        assert_eq!(
+            models,
+            [
+                "Catalyst 2960-48PST-L Switch",
+                "Catalyst 2960-48TC-L Switch"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn inline_children_below_the_depth_limit_are_not_taken() {
+        let limits = WalkLimits {
+            max_depth: 1,
+            ..WalkLimits::default()
+        };
+        let tree = Tree::new(&[("283018960", SWITCHES.to_string())]);
+        let products = find_products(&tree, "283018960", limits).await.unwrap();
+        assert!(products.is_empty(), "the models are two levels down");
     }
 }
