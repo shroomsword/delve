@@ -1,25 +1,32 @@
-//! Cisco's software-download catalog: the two JSON documents the
+//! Cisco's software-download catalog: the three JSON documents the
 //! software.cisco.com download pages are built from.
 //!
 //! - `GET /services/catalog/v1/products?mdfid=<id>` lists the children of one
 //!   node in the product tree (`mdfId` is Cisco's id for a node, and
 //!   `leafNodeFlag` says whether it is a product with software or a category
 //!   with more nodes below it).
+//! - `GET /services/catalog/v1/softwareTypes?mdfid=<id>` lists the kinds of
+//!   software a product has (`IOS XE Software`, `NBAR2 Protocol Packs`, ...)
+//!   with the `softwareId` of each.
 //! - `GET /services/catalog/v1/releases?mdfid=<id>&softwareId=<id>` lists the
-//!   software releases of one product: version, train, life cycle, whether
-//!   Cisco suggests it, and whether it is deferred.
+//!   releases of one kind of software of one product: version, train, life
+//!   cycle, whether Cisco suggests it, and whether it is deferred.
 //!
-//! The shapes here come from one captured response of each (kept in
-//! `testdata/`: the top of the tree, and the releases of the Catalyst 9300).
-//! Nothing here has been run against the live endpoints. Both answered an
+//! The shapes here come from captured responses (kept in `testdata/`): the
+//! top of the tree, the software types of a Catalyst (9300), and the releases
+//! of the Catalyst 9300 and of an SF220. The two differ in what they carry:
+//! the 9300's versions have a train name (`Dublin-17.12.8`) and a life cycle,
+//! the SF220's are plain `1.2.1.5` with neither.
+//! Nothing here has been run against the live endpoints. They answered an
 //! unauthenticated client with 401, so the code takes the response bodies and
 //! a [`CatalogSource`] to fetch them, and leaves how a request is allowed
-//! through to whoever implements the source.
+//! through to whoever implements the source. [`read_catalog`] ties the steps
+//! together: walk the tree below a node, find each product's software type by
+//! name, read that type's releases.
 //!
 //! What the releases document does **not** carry: a release date, a checksum,
 //! a download link or release notes. The metadata mapped from it has none of
 //! those, which is how `sha256: None` and `release_date: None` come about.
-//! Where `softwareId` comes from is also not in either document.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -47,6 +54,13 @@ pub fn releases_url(mdf_id: &str, software_id: &str) -> Url {
     url.query_pairs_mut()
         .append_pair("mdfid", mdf_id)
         .append_pair("softwareId", software_id);
+    url
+}
+
+/// The URL listing the kinds of software of product `mdf_id`.
+pub fn software_types_url(mdf_id: &str) -> Url {
+    let mut url = Url::parse(&format!("{BASE}/softwareTypes")).expect("a constant URL");
+    url.query_pairs_mut().append_pair("mdfid", mdf_id);
     url
 }
 
@@ -95,6 +109,10 @@ pub fn parse_products(body: &str) -> Result<Vec<ProductNode>, PluginError> {
 pub trait CatalogSource: Send + Sync {
     /// The body of [`products_url`] for `mdf_id`.
     async fn products(&self, mdf_id: &str) -> Result<String, PluginError>;
+    /// The body of [`software_types_url`] for `mdf_id`.
+    async fn software_types(&self, mdf_id: &str) -> Result<String, PluginError>;
+    /// The body of [`releases_url`] for `mdf_id` and `software_id`.
+    async fn releases(&self, mdf_id: &str, software_id: &str) -> Result<String, PluginError>;
 }
 
 /// A product found by [`find_products`], with the names of the nodes above it.
@@ -169,6 +187,42 @@ pub async fn find_products(
         }
     }
     Ok(found)
+}
+
+// ---- software types --------------------------------------------------
+
+/// One kind of software a product has, such as `IOS XE Software`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoftwareType {
+    pub name: String,
+    /// The id the `releases` endpoint takes. Cisco sends it as a number.
+    pub software_id: u64,
+    /// 1 or 2 in the sample; what the levels mean isn't in the response.
+    #[serde(default)]
+    pub access_level: Option<u8>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SoftwareTypesResponse {
+    #[serde(default)]
+    software_type_list: Vec<SoftwareType>,
+}
+
+/// The software types in a `softwareTypes` response body.
+pub fn parse_software_types(body: &str) -> Result<Vec<SoftwareType>, PluginError> {
+    serde_json::from_str::<SoftwareTypesResponse>(body)
+        .map(|r| r.software_type_list)
+        .map_err(|e| PluginError::Parse(format!("Cisco catalog software types: {e}")))
+}
+
+/// The software type called `name`, ignoring case and surrounding space.
+pub fn find_software_type<'a>(types: &'a [SoftwareType], name: &str) -> Option<&'a SoftwareType> {
+    let name = name.trim();
+    types
+        .iter()
+        .find(|t| t.name.trim().eq_ignore_ascii_case(name))
 }
 
 // ---- releases --------------------------------------------------------
@@ -316,13 +370,23 @@ pub fn version_key(version: &str) -> VersionKey {
     }
 }
 
-/// The product a `releases` response is for.
+/// The product and kind of software a `releases` response is for.
 #[derive(Debug, Clone)]
 pub struct Target {
     pub mdf_id: String,
     pub software_id: String,
     /// The product's name, such as `Catalyst 9300 Switch`.
     pub name: String,
+}
+
+impl Target {
+    pub fn new(product: &Product, software: &SoftwareType) -> Self {
+        Self {
+            mdf_id: product.node.mdf_id.clone(),
+            software_id: software.software_id.to_string(),
+            name: product.node.mdf_concept.clone(),
+        }
+    }
 }
 
 /// A release as the engine's `FirmwareRef` and `FirmwareMetadata`.
@@ -356,6 +420,109 @@ pub fn to_firmware(
         display_name: None,
     };
     (firmware_ref, metadata)
+}
+
+// ---- reading a subtree -----------------------------------------------
+
+/// A product's releases of the software type that was asked for.
+#[derive(Debug, Clone)]
+pub struct ProductReleases {
+    pub product: Product,
+    pub software: SoftwareType,
+    pub releases: Vec<Release>,
+}
+
+/// What [`read_catalog`] found below a node.
+#[derive(Debug, Clone, Default)]
+pub struct CatalogReading {
+    pub read: Vec<ProductReleases>,
+    /// Products with no software type of the name asked for. Most of a
+    /// subtree is usually this: the other kinds of software, and products
+    /// that have none of the kind.
+    pub without_software: Vec<Product>,
+}
+
+/// Makes at most `left` requests through `inner`, and fails the next one.
+struct Budget<'a> {
+    inner: &'a dyn CatalogSource,
+    left: std::sync::atomic::AtomicUsize,
+    limit: usize,
+    root: &'a str,
+}
+
+impl Budget<'_> {
+    fn spend(&self) -> Result<(), PluginError> {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.left
+            .fetch_update(Relaxed, Relaxed, |n| n.checked_sub(1))
+            .map(|_| ())
+            .map_err(|_| {
+                PluginError::UnexpectedResponse(format!(
+                    "reading the catalog below {} needs more than {} requests; \
+                     start lower in the tree or raise the limit",
+                    self.root, self.limit
+                ))
+            })
+    }
+}
+
+#[async_trait]
+impl CatalogSource for Budget<'_> {
+    async fn products(&self, mdf_id: &str) -> Result<String, PluginError> {
+        self.spend()?;
+        self.inner.products(mdf_id).await
+    }
+
+    async fn software_types(&self, mdf_id: &str) -> Result<String, PluginError> {
+        self.spend()?;
+        self.inner.software_types(mdf_id).await
+    }
+
+    async fn releases(&self, mdf_id: &str, software_id: &str) -> Result<String, PluginError> {
+        self.spend()?;
+        self.inner.releases(mdf_id, software_id).await
+    }
+}
+
+/// Reads the releases of every product below `root`: walks the tree to its
+/// products, asks each for its software types, and for those that have one
+/// called `software_name` (`IOS XE Software`, say) reads its releases.
+///
+/// `limits.max_requests` is for the whole read, the tree walk and the
+/// per-product requests together, and running out is an error, not a short
+/// result. A product that has no such software type is listed in
+/// [`CatalogReading::without_software`], not an error.
+pub async fn read_catalog(
+    source: &dyn CatalogSource,
+    root: &str,
+    software_name: &str,
+    limits: WalkLimits,
+) -> Result<CatalogReading, PluginError> {
+    let budget = Budget {
+        inner: source,
+        left: limits.max_requests.into(),
+        limit: limits.max_requests,
+        root,
+    };
+    let mut reading = CatalogReading::default();
+    for product in find_products(&budget, root, limits).await? {
+        let mdf_id = &product.node.mdf_id;
+        let types = parse_software_types(&budget.software_types(mdf_id).await?)?;
+        let Some(software) = find_software_type(&types, software_name).cloned() else {
+            reading.without_software.push(product);
+            continue;
+        };
+        let body = budget
+            .releases(mdf_id, &software.software_id.to_string())
+            .await?;
+        let releases = parse_releases(&body)?;
+        reading.read.push(ProductReleases {
+            product,
+            software,
+            releases,
+        });
+    }
+    Ok(reading)
 }
 
 #[cfg(test)]
@@ -580,6 +747,14 @@ mod tests {
                 .cloned()
                 .unwrap_or_else(|| r#"{"response":[]}"#.to_string()))
         }
+
+        async fn software_types(&self, _: &str) -> Result<String, PluginError> {
+            Err(PluginError::Unimplemented)
+        }
+
+        async fn releases(&self, _: &str, _: &str) -> Result<String, PluginError> {
+            Err(PluginError::Unimplemented)
+        }
     }
 
     fn node(id: &str, name: &str, parent: &str, leaf: bool) -> String {
@@ -686,5 +861,247 @@ mod tests {
         let products = find_products(&tree, "268437593", limits).await.unwrap();
         assert!(products.is_empty());
         assert_eq!(*tree.requests.lock().unwrap(), ["268437593"]);
+    }
+    const TYPES: &str = include_str!("../testdata/catalog-software-types-c9300.json");
+    const SF220: &str = include_str!("../testdata/catalog-releases-sf220.json");
+
+    #[test]
+    fn the_software_types_url_takes_the_product_id() {
+        assert_eq!(
+            software_types_url("286315874").as_str(),
+            "https://software.cisco.com/services/catalog/v1/softwareTypes?mdfid=286315874"
+        );
+    }
+
+    #[test]
+    fn the_sample_has_nine_software_types_each_with_a_numeric_id() {
+        let types = parse_software_types(TYPES).unwrap();
+        assert_eq!(types.len(), 9);
+        let ios_xe = find_software_type(&types, "IOS XE Software").unwrap();
+        assert_eq!(ios_xe.software_id, 282046477);
+        assert_eq!(ios_xe.access_level, Some(1));
+    }
+
+    #[test]
+    fn a_software_type_is_found_by_name_ignoring_case_and_space() {
+        let types = parse_software_types(TYPES).unwrap();
+        let found = find_software_type(&types, "  ios xe software ").unwrap();
+        assert_eq!(found.software_id, 282046477);
+        // Only the exact name: a prefix of another type's name is not it.
+        assert_eq!(
+            find_software_type(&types, "NBAR2 Protocol Packs")
+                .unwrap()
+                .software_id,
+            284509011
+        );
+        assert!(find_software_type(&types, "Switch Firmware").is_none());
+    }
+
+    #[test]
+    fn no_software_types_is_an_empty_list() {
+        assert!(parse_software_types("{}").unwrap().is_empty());
+        assert!(matches!(
+            parse_software_types("<html>"),
+            Err(PluginError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn the_sf220_has_sixteen_releases_none_deferred_or_suggested() {
+        let releases = parse_releases(SF220).unwrap();
+        assert_eq!(releases.len(), 16);
+        assert!(releases
+            .iter()
+            .all(|r| r.availability == Availability::Available && !r.suggested));
+    }
+
+    #[test]
+    fn the_sf220_has_no_train_name_and_no_life_cycle() {
+        // bucket2 is empty and lifeCycle is "" on every entry, so there is
+        // nothing to record (bucket1 is "1.2", "1", ... and isn't a train).
+        let releases = parse_releases(SF220).unwrap();
+        assert!(releases
+            .iter()
+            .all(|r| r.train.is_none() && r.life_cycle.is_none()));
+    }
+
+    #[test]
+    fn the_sf220_versions_are_four_numbers_and_sort_numerically() {
+        let releases = parse_releases(SF220).unwrap();
+        assert!(releases
+            .iter()
+            .all(|r| matches!(version_key(&r.version).scheme, VersionScheme::VendorNumeric)));
+        assert_eq!(version_key("1.2.1.5").ordinal, Some(vec![1, 2, 1, 5, 0]));
+        let newest = releases
+            .iter()
+            .max_by_key(|r| version_key(&r.version).ordinal)
+            .unwrap();
+        assert_eq!(newest.version, "1.2.1.5");
+        let oldest = releases
+            .iter()
+            .min_by_key(|r| version_key(&r.version).ordinal)
+            .unwrap();
+        assert_eq!(oldest.version, "1.0.0.17");
+        // 18 before 19 as numbers, and 1.0.0.19 before 1.0.1.1.
+        let order = |v: &str| version_key(v).ordinal;
+        assert!(order("1.0.0.18") < order("1.0.0.19"));
+        assert!(order("1.0.0.19") < order("1.0.1.1"));
+        assert!(order("1.1.0.14") > order("1.0.1.1"));
+    }
+
+    /// Serves canned bodies and logs the requests as `kind:ids`.
+    struct Catalog {
+        products: HashMap<&'static str, String>,
+        types: HashMap<&'static str, String>,
+        releases: HashMap<(&'static str, &'static str), String>,
+        requests: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl Catalog {
+        fn log(&self, entry: String) {
+            self.requests.lock().unwrap().push(entry);
+        }
+    }
+
+    #[async_trait]
+    impl CatalogSource for Catalog {
+        async fn products(&self, mdf_id: &str) -> Result<String, PluginError> {
+            self.log(format!("products:{mdf_id}"));
+            Ok(self.products.get(mdf_id).cloned().unwrap_or_default())
+        }
+
+        async fn software_types(&self, mdf_id: &str) -> Result<String, PluginError> {
+            self.log(format!("types:{mdf_id}"));
+            Ok(self.types.get(mdf_id).cloned().unwrap_or_default())
+        }
+
+        async fn releases(&self, mdf_id: &str, software_id: &str) -> Result<String, PluginError> {
+            self.log(format!("releases:{mdf_id}:{software_id}"));
+            Ok(self
+                .releases
+                .iter()
+                .find(|((m, s), _)| *m == mdf_id && *s == software_id)
+                .map(|(_, body)| body.clone())
+                .unwrap_or_default())
+        }
+    }
+
+    /// A tree with the two products of the samples below one category. The
+    /// Catalyst 9300's software types and releases are the captured
+    /// responses. The SF220 has its captured releases, but its node, ids and
+    /// software types were never captured: the id `5000`, the software id `1`
+    /// and the type name `Switch Firmware` are made up for this test.
+    fn two_products() -> Catalog {
+        Catalog {
+            products: HashMap::from([
+                ("1", level(&[node("2", "Switches", "1", false)])),
+                (
+                    "2",
+                    level(&[
+                        node("286315874", "Catalyst 9300 Switch", "2", true),
+                        node("5000", "SF220-24", "2", true),
+                    ]),
+                ),
+            ]),
+            types: HashMap::from([
+                ("286315874", TYPES.to_string()),
+                (
+                    "5000",
+                    r#"{"softwareTypeList":[{"name":"Switch Firmware","softwareId":1}]}"#
+                        .to_string(),
+                ),
+            ]),
+            releases: HashMap::from([
+                (("286315874", "282046477"), C9300.to_string()),
+                (("5000", "1"), SF220.to_string()),
+            ]),
+            requests: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn reading_a_subtree_reads_the_releases_of_the_products_that_have_the_software() {
+        let catalog = two_products();
+        let reading = read_catalog(&catalog, "1", "IOS XE Software", WalkLimits::default())
+            .await
+            .unwrap();
+
+        assert_eq!(reading.read.len(), 1);
+        let c9300 = &reading.read[0];
+        assert_eq!(c9300.product.node.mdf_concept, "Catalyst 9300 Switch");
+        assert_eq!(c9300.product.path, ["Switches", "Catalyst 9300 Switch"]);
+        assert_eq!(c9300.software.software_id, 282046477);
+        assert_eq!(c9300.releases.len(), 97);
+
+        let without: Vec<_> = reading
+            .without_software
+            .iter()
+            .map(|p| p.node.mdf_concept.as_str())
+            .collect();
+        assert_eq!(without, ["SF220-24"]);
+
+        // The ids in the releases request are the ones the types gave.
+        assert_eq!(
+            *catalog.requests.lock().unwrap(),
+            [
+                "products:1",
+                "products:2",
+                "types:286315874",
+                "releases:286315874:282046477",
+                "types:5000",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_read_with_another_software_name_gets_the_other_product() {
+        let catalog = two_products();
+        let reading = read_catalog(&catalog, "1", "Switch Firmware", WalkLimits::default())
+            .await
+            .unwrap();
+        assert_eq!(reading.read.len(), 1);
+        assert_eq!(reading.read[0].product.node.mdf_concept, "SF220-24");
+        assert_eq!(reading.read[0].releases.len(), 16);
+        assert_eq!(reading.without_software.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_request_limit_covers_the_walk_and_the_per_product_requests() {
+        let catalog = two_products();
+        let limits = WalkLimits {
+            max_requests: 4,
+            ..WalkLimits::default()
+        };
+        let err = read_catalog(&catalog, "1", "IOS XE Software", limits)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("more than 4 requests"), "{err}");
+        assert_eq!(
+            catalog.requests.lock().unwrap().len(),
+            4,
+            "the fifth request was not made"
+        );
+    }
+
+    #[test]
+    fn a_target_takes_its_ids_and_name_from_the_product_and_software_type() {
+        let product = Product {
+            node: parse_products(&level(&[node(
+                "286315874",
+                "Catalyst 9300 Switch",
+                "2",
+                true,
+            )]))
+            .unwrap()
+            .remove(0),
+            path: vec!["Catalyst 9300 Switch".into()],
+        };
+        let software = find_software_type(&parse_software_types(TYPES).unwrap(), "IOS XE Software")
+            .unwrap()
+            .clone();
+        let target = Target::new(&product, &software);
+        assert_eq!(target.mdf_id, "286315874");
+        assert_eq!(target.software_id, "282046477");
+        assert_eq!(target.name, "Catalyst 9300 Switch");
     }
 }
