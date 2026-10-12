@@ -445,24 +445,23 @@ pub struct CatalogReading {
 /// Makes at most `left` requests through `inner`, and fails the next one.
 struct Budget<'a> {
     inner: &'a dyn CatalogSource,
-    left: std::sync::atomic::AtomicUsize,
+    left: std::sync::Mutex<usize>,
     limit: usize,
     root: &'a str,
 }
 
 impl Budget<'_> {
     fn spend(&self) -> Result<(), PluginError> {
-        use std::sync::atomic::Ordering::Relaxed;
-        self.left
-            .fetch_update(Relaxed, Relaxed, |n| n.checked_sub(1))
-            .map(|_| ())
-            .map_err(|_| {
-                PluginError::UnexpectedResponse(format!(
-                    "reading the catalog below {} needs more than {} requests; \
-                     start lower in the tree or raise the limit",
-                    self.root, self.limit
-                ))
-            })
+        let mut left = self.left.lock().unwrap_or_else(|e| e.into_inner());
+        if *left == 0 {
+            return Err(PluginError::UnexpectedResponse(format!(
+                "reading the catalog below {} needs more than {} requests; \
+                 start lower in the tree or raise the limit",
+                self.root, self.limit
+            )));
+        }
+        *left -= 1;
+        Ok(())
     }
 }
 
@@ -500,7 +499,7 @@ pub async fn read_catalog(
 ) -> Result<CatalogReading, PluginError> {
     let budget = Budget {
         inner: source,
-        left: limits.max_requests.into(),
+        left: std::sync::Mutex::new(limits.max_requests),
         limit: limits.max_requests,
         root,
     };
