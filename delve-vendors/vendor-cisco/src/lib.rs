@@ -25,6 +25,7 @@
 
 mod api;
 mod auth;
+pub mod catalog;
 mod version;
 
 use async_trait::async_trait;
