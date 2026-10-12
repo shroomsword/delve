@@ -852,10 +852,57 @@ real one with contact info before running against an actual vendor site;
 this is the same honesty-about-what-this-is discipline as the
 `tos_reviewed` gate, not just a technical nicety.
 
-These settings are shared across every vendor in a run — unlike
-`Transport`, there's no per-vendor override for UA/timeouts, since there's
-no real scenario yet where one vendor needs different HTTP behavior than
-another.
+`user_agent` and the timeouts are shared across every vendor in a run.
+Request headers can be set per vendor:
+
+### Request headers
+
+`[transport.headers]` sets headers on the requests delve makes to every
+vendor, and `[transport.header_overrides.<vendor>]` sets them for one vendor,
+replacing a global header of the same name. Use it when a vendor's endpoint
+wants something delve doesn't send, such as a session cookie, an API key or an
+`Accept-Language`.
+
+```toml
+[transport.headers]
+Accept-Language = "en-US"
+
+[transport.header_overrides.cisco]
+Cookie = "env:CISCO_COOKIE"
+X-Api-Key = "env:CISCO_API_KEY"
+```
+
+- **Values** are written out, or `env:NAME` reads them from the environment
+  when delve starts (the same as credentials). A variable that isn't set is an
+  error naming the header, and a secret belongs in the environment rather
+  than in the file.
+- **Names** aren't case-sensitive, and a name set twice in one table is an
+  error. Names and written-out values are checked when the config loads. An
+  error names the header and never shows its value.
+- **Refused:** the headers that frame the request or that delve's client
+  manages (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+  `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Expect`, `Proxy-Authorization`,
+  `Proxy-Connection`), and `Accept-Encoding`, since delve decodes only the
+  encodings it asks for.
+- **`User-Agent`** can be set here too, and then replaces `[transport]
+  user_agent`. Keep a way for the vendor to reach you in it (see above).
+- **Every vendor** has this, with no change to the plugin: the headers are on
+  the HTTP client a vendor's `discover`, `metadata` and `fetch` use. A header
+  a plugin sets on a request itself wins for that request: `vendor-cisco`'s
+  `Authorization: Bearer ...` replaces a configured `Authorization`.
+- **Subscribers don't get them.** The webhook and email subscribers have their
+  own clients, so a cookie set for one vendor is never sent to your webhook.
+- **Redirects:** the headers are sent on every request of the vendor, also to
+  another host a redirect leads to. The HTTP client drops `Authorization` and
+  `Cookie` when a redirect changes host, and nothing else, so a custom header
+  with a secret in it is only safe to set for a vendor whose redirects you
+  trust.
+- The values are never logged. Use `delve survey` freely: it keeps these
+  tables as they are.
+
+Using a header to look like something you are not (another client, a browser,
+a session that isn't yours) is part of the vendor's ToS review, not a way
+around it.
 
 ## Notifications
 
@@ -1341,6 +1388,12 @@ cisco = "direct"                                # cisco's portal blocks Tor exit
 
 [transport.rate_limit_overrides]
 cisco = 3000                                     # cisco's robots.txt specifies a slower crawl-delay
+
+[transport.headers]                              # request headers for every vendor; see "Request headers"
+Accept-Language = "en-US"
+
+[transport.header_overrides.cisco]               # for one vendor; replaces a global header of the same name
+Cookie = "env:CISCO_COOKIE"                      # env:NAME reads the value from the environment
 
 [subscribers.webhook]
 url = "https://example.com/hooks/delve"

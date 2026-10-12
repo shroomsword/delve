@@ -31,6 +31,11 @@ pub(crate) struct Answers {
     pub(crate) connect_timeout_secs: Option<u64>,
     pub(crate) min_request_interval_ms: Option<u64>,
     pub(crate) rate_limit_overrides: BTreeMap<String, u64>,
+    /// `[transport.headers]`, as written: `env:NAME` or a literal. The survey
+    /// asks nothing about these; they are kept as they were.
+    pub(crate) headers: BTreeMap<String, String>,
+    /// `[transport.header_overrides.<vendor>]`, kept the same way.
+    pub(crate) header_overrides: BTreeMap<String, BTreeMap<String, String>>,
     pub(crate) changed_fields: Option<Vec<String>>,
     pub(crate) webhook_url: Option<String>,
     pub(crate) email: Option<EmailAnswers>,
@@ -96,6 +101,8 @@ impl Answers {
                 .iter()
                 .map(|(k, v)| (k.clone(), *v))
                 .collect(),
+            headers: config.transport.headers.clone(),
+            header_overrides: config.transport.header_overrides.clone(),
             changed_fields: config.notifications.changed_fields.clone(),
             webhook_url: config.subscribers.webhook.as_ref().map(|w| w.url.clone()),
             email: config.subscribers.email.as_ref().map(|e| EmailAnswers {
@@ -304,6 +311,27 @@ pub(crate) fn render(answers: &Answers, default_database_path: &str) -> String {
         );
         for (vendor, ms) in &answers.rate_limit_overrides {
             let _ = writeln!(o, "{} = {ms}", key(vendor));
+        }
+    }
+    if !answers.headers.is_empty() {
+        let _ = writeln!(o, "\n[transport.headers]");
+        let _ = writeln!(
+            o,
+            "# Request headers sent to every vendor. A value is written out, or is\n\
+             # env:NAME to read it from the environment."
+        );
+        for (name, value) in &answers.headers {
+            let _ = writeln!(o, "{} = {}", key(name), string(value));
+        }
+    }
+    for (vendor, headers) in &answers.header_overrides {
+        let _ = writeln!(o, "\n[transport.header_overrides.{}]", key(vendor));
+        let _ = writeln!(
+            o,
+            "# Request headers for this vendor only; they replace the same-named ones above."
+        );
+        for (name, value) in headers {
+            let _ = writeln!(o, "{} = {}", key(name), string(value));
         }
     }
 

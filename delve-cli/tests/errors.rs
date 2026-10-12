@@ -264,3 +264,21 @@ fn no_color_is_honored_when_the_choice_is_auto() {
     let err = String::from_utf8(out.stderr).unwrap();
     assert!(!err.contains('\x1b'), "{err:?}");
 }
+
+#[test]
+fn a_header_that_cannot_be_set_stops_the_run_and_the_error_does_not_show_its_value() {
+    let dir = Dir::new();
+    let config = dir.0.join("headers.toml");
+    std::fs::write(
+        &config,
+        "[transport.header_overrides.acme]\nCookie = \"a=b\\r\\nX: top-secret-value\"\n",
+    )
+    .unwrap();
+    let out = dir.run(&config, &[], &["catalog"]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8(out.stderr).unwrap();
+    assert!(err.contains("[transport.header_overrides.acme]"), "{err}");
+    assert!(err.contains("'Cookie'"), "{err}");
+    assert!(!err.contains("top-secret-value"), "{err}");
+}

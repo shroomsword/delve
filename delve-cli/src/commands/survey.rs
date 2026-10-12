@@ -1236,6 +1236,28 @@ mod tests {
         check(file).expect("the written file passes the same checks");
     }
 
+    #[test]
+    fn header_tables_are_kept_when_the_file_is_written_again() {
+        let empty: Config = toml::from_str("").unwrap();
+        let mut answers = Answers::from_config(&empty, &ctx().default_database_path);
+        answers
+            .headers
+            .insert("Accept-Language".into(), "en-US".into());
+        answers.header_overrides.insert(
+            "cisco".into(),
+            std::collections::BTreeMap::from([("Cookie".into(), "env:CISCO_COOKIE".into())]),
+        );
+        let file = render(&answers, &ctx().default_database_path);
+        assert!(file.contains("[transport.headers]\n"), "{file}");
+        assert!(file.contains("Accept-Language = \"en-US\""), "{file}");
+        assert!(
+            file.contains("[transport.header_overrides.cisco]\n"),
+            "{file}"
+        );
+        assert!(file.contains("Cookie = \"env:CISCO_COOKIE\""), "{file}");
+        round_trips(&file);
+    }
+
     /// Runs a scenario that ends by writing the file, and checks it.
     fn scenario(name: &str, script: Vec<Answer>) -> Run {
         let run = run_script(script, None, false);

@@ -192,7 +192,7 @@ pub async fn run(
         .ok_or_else(|| anyhow::anyhow!("unknown vendor: {vendor_id}"))?;
 
     let (default_transport, overrides) = config.transport.resolve()?;
-    let http_config = config.transport.http_client_config();
+    let http_config = config.transport.http_client_config_for(&vendor_id)?;
     let (default_rate_limit, rate_limit_overrides) = config.transport.rate_limits();
     let credentials = config.vendors.resolve_credentials(&vendor_id)?;
     let ctx = context_for_vendor(
