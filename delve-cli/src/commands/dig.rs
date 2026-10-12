@@ -134,7 +134,6 @@ async fn dig_each_vendor(
     }
 
     let (default_transport, transport_overrides) = config.transport.resolve()?;
-    let http_config = config.transport.http_client_config();
     let (default_rate_limit, rate_limit_overrides) = config.transport.rate_limits();
 
     let vendor_ids: Vec<&str> = match &vendor_filter {
@@ -187,6 +186,7 @@ async fn dig_each_vendor(
         }
 
         let credentials = config.vendors.resolve_credentials(vendor_id)?;
+        let http_config = config.transport.http_client_config_for(vendor_id)?;
         let ctx = context_for_vendor(
             &default_transport,
             &transport_overrides,

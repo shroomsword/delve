@@ -18,6 +18,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
+use crate::headers::RequestHeaders;
 use crate::plugin::PluginError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +64,8 @@ pub enum CircuitIsolation {
 pub enum TransportError {
     #[error("failed to build HTTP client: {0}")]
     ClientBuild(#[from] reqwest::Error),
+    #[error("the User-Agent is not a valid HTTP header value")]
+    InvalidUserAgent,
     /// `TorMode::Embedded` has no implementation behind it. Returned
     /// instead of panicking so that selecting it can only ever fail a dig
     /// with a message, never crash the process.
@@ -85,13 +88,17 @@ pub fn default_user_agent() -> String {
     concat!("delve/", env!("CARGO_PKG_VERSION")).to_string()
 }
 
-/// HTTP client behavior that isn't per-vendor — applied uniformly to every
-/// `ScrapeContext` a run creates. Configurable via `[transport]` in
-/// `delve-cli`'s config (`user_agent`, `request_timeout_secs`,
-/// `connect_timeout_secs`).
+/// HTTP client behavior applied to every request a `ScrapeContext` makes.
+/// Configurable via `[transport]` in `delve-cli`'s config (`user_agent`,
+/// `request_timeout_secs`, `connect_timeout_secs`, and `headers`, which the
+/// caller merges per vendor).
 #[derive(Debug, Clone)]
 pub struct HttpClientConfig {
     pub user_agent: String,
+    /// Headers sent on every request, set or replaced over the client's own
+    /// (`User-Agent` included). A header a plugin sets on a request itself
+    /// takes precedence for that request. Empty by default.
+    pub headers: RequestHeaders,
     /// Caps how long a single request (including reading the response
     /// body) may take. Without this, a hung connection to a vendor site
     /// blocks that vendor's entire dig indefinitely — one unresponsive
@@ -107,6 +114,7 @@ impl Default for HttpClientConfig {
     fn default() -> Self {
         Self {
             user_agent: default_user_agent(),
+            headers: RequestHeaders::default(),
             request_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
         }
@@ -294,8 +302,16 @@ impl ScrapeContext {
         transport: &Transport,
         http: &HttpClientConfig,
     ) -> Result<reqwest::Client, TransportError> {
+        // One map, not `.user_agent()` plus `.default_headers()`: the second
+        // replaces the whole map the first adds to. The configured headers go
+        // in last so that they can replace the User-Agent.
+        let user_agent = reqwest::header::HeaderValue::from_str(&http.user_agent)
+            .map_err(|_| TransportError::InvalidUserAgent)?;
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::USER_AGENT, user_agent);
+        http.headers.apply_to(&mut headers);
         let builder = reqwest::Client::builder()
-            .user_agent(http.user_agent.clone())
+            .default_headers(headers)
             .timeout(http.request_timeout)
             .connect_timeout(http.connect_timeout);
         let client = match transport {
@@ -453,6 +469,7 @@ mod tests {
     fn scrape_context_builds_successfully_with_a_custom_http_config() {
         let http = HttpClientConfig {
             user_agent: "test-agent/1.0 (contact: test@example.test)".to_string(),
+            headers: RequestHeaders::default(),
             request_timeout: Duration::from_secs(5),
             connect_timeout: Duration::from_secs(2),
         };
@@ -700,5 +717,122 @@ mod tests {
         // interval — total elapsed time for both to complete must be at
         // least min_interval, not ~0 for both.
         assert!(Instant::now().saturating_duration_since(start) >= Duration::from_millis(500));
+    }
+    /// Serves one request on a plain thread and returns its headers as
+    /// lowercase `name: value` pairs.
+    fn one_request_server() -> (
+        std::net::SocketAddr,
+        std::thread::JoinHandle<HashMap<String, String>>,
+    ) {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = HashMap::new();
+            for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+                let line = line.unwrap();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    seen.insert(name.to_ascii_lowercase(), value.trim().to_string());
+                }
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            seen
+        });
+        (addr, server)
+    }
+
+    fn ctx_with_headers(headers: &[(&str, &str)]) -> ScrapeContext {
+        let mut request_headers = RequestHeaders::new();
+        for (name, value) in headers {
+            request_headers.insert(name, value).unwrap();
+        }
+        ScrapeContext::new(
+            Transport::Direct,
+            Credentials::new(),
+            HttpClientConfig {
+                headers: request_headers,
+                ..HttpClientConfig::default()
+            },
+            RateLimit::default(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn configured_headers_reach_the_server() {
+        let (addr, server) = one_request_server();
+        let ctx = ctx_with_headers(&[("Cookie", "session=abc"), ("X-Api-Key", "k1")]);
+        ctx.http_client()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(seen["cookie"], "session=abc");
+        assert_eq!(seen["x-api-key"], "k1");
+        assert_eq!(seen["user-agent"], default_user_agent(), "left as it was");
+    }
+
+    #[tokio::test]
+    async fn a_configured_user_agent_replaces_the_one_from_the_http_config() {
+        let (addr, server) = one_request_server();
+        let ctx = ctx_with_headers(&[("User-Agent", "mine/2.0 (contact: me@example.test)")]);
+        ctx.http_client()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(seen["user-agent"], "mine/2.0 (contact: me@example.test)");
+    }
+
+    #[tokio::test]
+    async fn a_header_a_plugin_sets_on_the_request_wins_over_the_configured_one() {
+        let (addr, server) = one_request_server();
+        let ctx = ctx_with_headers(&[("Authorization", "Bearer from-config")]);
+        ctx.http_client()
+            .get(format!("http://{addr}/"))
+            .bearer_auth("from-plugin")
+            .send()
+            .await
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(seen["authorization"], "Bearer from-plugin");
+    }
+
+    #[test]
+    fn an_invalid_user_agent_is_an_error_not_a_dropped_header() {
+        let result = ScrapeContext::new(
+            Transport::Direct,
+            Credentials::new(),
+            HttpClientConfig {
+                user_agent: "bad\nagent".into(),
+                ..HttpClientConfig::default()
+            },
+            RateLimit::default(),
+        );
+        assert!(matches!(result, Err(TransportError::InvalidUserAgent)));
+    }
+
+    #[test]
+    fn the_http_config_debug_output_has_header_names_and_no_values() {
+        let mut headers = RequestHeaders::new();
+        headers.insert("Cookie", "session=hunter2").unwrap();
+        let config = HttpClientConfig {
+            headers,
+            ..HttpClientConfig::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(debug.contains("cookie"), "{debug}");
+        assert!(!debug.contains("hunter2"), "{debug}");
     }
 }

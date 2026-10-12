@@ -136,6 +136,17 @@ pub struct TransportConfig {
     /// above, which does the same thing for `Transport`.
     #[serde(default)]
     pub rate_limit_overrides: std::collections::HashMap<String, u64>,
+
+    /// Request headers to send to every vendor, name to value. A value is
+    /// used as written, or `env:NAME` is read from the environment at
+    /// startup. See [`TransportConfig::http_client_config_for`].
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    /// Request headers for one vendor, keyed by vendor id, in the same form
+    /// as `headers`. A header here replaces a global one of the same name.
+    #[serde(default)]
+    pub header_overrides:
+        std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>,
 }
 
 /// Simplified config-file representation of `Transport` — the config file
@@ -173,6 +184,7 @@ impl TransportConfig {
         let defaults = delve_core::context::HttpClientConfig::default();
         delve_core::context::HttpClientConfig {
             user_agent: self.user_agent.clone().unwrap_or(defaults.user_agent),
+            headers: defaults.headers,
             request_timeout: self
                 .request_timeout_secs
                 .map(std::time::Duration::from_secs)
@@ -182,6 +194,64 @@ impl TransportConfig {
                 .map(std::time::Duration::from_secs)
                 .unwrap_or(defaults.connect_timeout),
         }
+    }
+
+    /// The HTTP client settings for one vendor: [`Self::http_client_config`]
+    /// plus the request headers, the global `headers` first and then the
+    /// vendor's `header_overrides`, so that the vendor's replace a global
+    /// header of the same name. An `env:NAME` value is read from the
+    /// environment here, and a variable that is not set is an error.
+    ///
+    /// Only requests a vendor makes through its `ScrapeContext` carry these.
+    /// Subscribers (webhook, email) build their own clients and never do.
+    pub fn http_client_config_for(
+        &self,
+        vendor_id: &str,
+    ) -> anyhow::Result<delve_core::context::HttpClientConfig> {
+        let mut config = self.http_client_config();
+        let tables = [
+            ("[transport.headers]".to_string(), Some(&self.headers)),
+            (
+                format!("[transport.header_overrides.{vendor_id}]"),
+                self.header_overrides.get(vendor_id),
+            ),
+        ];
+        for (table, headers) in tables {
+            for (name, value) in headers.into_iter().flatten() {
+                let value = resolve_env_ref(value, || format!("header '{name}' in {table}"))?;
+                config
+                    .headers
+                    .insert(name, &value)
+                    .map_err(|e| anyhow::anyhow!("{table}: {e}"))?;
+            }
+        }
+        Ok(config)
+    }
+
+    /// Checks every configured header's name, and its value where that is
+    /// written out (an `env:` reference can't be checked until it is read),
+    /// so a bad header is found when the config loads and not on the first
+    /// request. Errors never contain a value.
+    fn validate_headers(&self) -> anyhow::Result<()> {
+        let tables = std::iter::once(("[transport.headers]".to_string(), &self.headers)).chain(
+            self.header_overrides.iter().map(|(vendor, headers)| {
+                (format!("[transport.header_overrides.{vendor}]"), headers)
+            }),
+        );
+        for (table, headers) in tables {
+            let mut seen = std::collections::HashSet::new();
+            for (name, value) in headers {
+                let literal = (!value.starts_with("env:")).then_some(value.as_str());
+                delve_core::headers::RequestHeaders::check(name, literal)
+                    .map_err(|e| anyhow::anyhow!("{table}: {e}"))?;
+                if !seen.insert(name.to_ascii_lowercase()) {
+                    anyhow::bail!(
+                        "{table}: header '{name}' is set twice (header names are not case-sensitive)"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Builds the default rate limit plus per-vendor overrides, resolved
@@ -431,6 +501,10 @@ pub fn load(override_path: Option<&Path>) -> anyhow::Result<Config> {
     let mut config: Config = toml::from_str(&contents)
         .map_err(|e| anyhow::anyhow!("failed to parse config at {}: {e}", path.display()))?;
     config.expand_paths(dirs::home_dir().as_deref())?;
+    config
+        .transport
+        .validate_headers()
+        .map_err(|e| anyhow::anyhow!("invalid config at {}: {e}", path.display()))?;
     Ok(config)
 }
 
@@ -1089,5 +1163,142 @@ mod tests {
             Some(&SettingValue::Text("release".into()))
         );
         assert!(config.vendors.settings_for("cisco").is_empty());
+    }
+    fn headers_of(config: &Config, vendor: &str) -> Vec<String> {
+        let mut names: Vec<String> = config
+            .transport
+            .http_client_config_for(vendor)
+            .unwrap()
+            .headers
+            .names()
+            .map(str::to_string)
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn no_headers_are_configured_by_default() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.transport.headers.is_empty());
+        assert!(config.transport.header_overrides.is_empty());
+        assert!(headers_of(&config, "acme").is_empty());
+    }
+
+    #[test]
+    fn global_headers_apply_to_every_vendor_and_a_vendors_own_are_added() {
+        let config: Config = toml::from_str(
+            r#"
+            [transport.headers]
+            Accept-Language = "en-US"
+
+            [transport.header_overrides.acme]
+            X-Api-Key = "k1"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            headers_of(&config, "acme"),
+            ["accept-language", "x-api-key"]
+        );
+        assert_eq!(headers_of(&config, "other"), ["accept-language"]);
+    }
+
+    #[test]
+    fn a_vendors_header_replaces_the_global_one_of_the_same_name() {
+        let config: Config = toml::from_str(
+            r#"
+            [transport.headers]
+            Accept-Language = "en-US"
+
+            [transport.header_overrides.acme]
+            accept-language = "de"
+            "#,
+        )
+        .unwrap();
+        let http = config.transport.http_client_config_for("acme").unwrap();
+        assert_eq!(http.headers.get("accept-language"), Some("de"));
+        assert_eq!(http.headers.names().count(), 1);
+        let other = config.transport.http_client_config_for("other").unwrap();
+        assert_eq!(other.headers.get("accept-language"), Some("en-US"));
+    }
+
+    #[test]
+    fn a_value_can_come_from_the_environment() {
+        std::env::set_var("DELVE_TEST_HEADER_COOKIE", "session=abc");
+        let config: Config = toml::from_str(
+            r#"
+            [transport.header_overrides.acme]
+            Cookie = "env:DELVE_TEST_HEADER_COOKIE"
+            "#,
+        )
+        .unwrap();
+        let result = config.transport.http_client_config_for("acme");
+        std::env::remove_var("DELVE_TEST_HEADER_COOKIE");
+        assert_eq!(result.unwrap().headers.get("cookie"), Some("session=abc"));
+    }
+
+    #[test]
+    fn an_unset_environment_variable_is_an_error_naming_the_header_and_the_table() {
+        let config: Config = toml::from_str(
+            r#"
+            [transport.header_overrides.acme]
+            Cookie = "env:DELVE_TEST_HEADER_NOT_SET_XYZ"
+            "#,
+        )
+        .unwrap();
+        let err = config
+            .transport
+            .http_client_config_for("acme")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("header 'Cookie'"), "{err}");
+        assert!(err.contains("[transport.header_overrides.acme]"), "{err}");
+        assert!(err.contains("DELVE_TEST_HEADER_NOT_SET_XYZ"), "{err}");
+        // Another vendor's digs don't need it.
+        assert!(config.transport.http_client_config_for("other").is_ok());
+    }
+
+    #[test]
+    fn a_bad_header_is_an_error_when_the_config_loads_and_the_error_has_no_value() {
+        let dir = std::env::temp_dir().join(format!("delve-headers-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let load = |body: &str| {
+            let path = dir.join("config.toml");
+            std::fs::write(&path, body).unwrap();
+            load(Some(&path)).map(|_| ()).unwrap_err().to_string()
+        };
+
+        let err = load("[transport.headers]\nHost = \"example.test\"\n");
+        assert!(
+            err.contains("[transport.headers]") && err.contains("'Host'"),
+            "{err}"
+        );
+
+        let err = load("[transport.header_overrides.acme]\n\"Bad Name\" = \"x\"\n");
+        assert!(err.contains("[transport.header_overrides.acme]"), "{err}");
+        assert!(err.contains("'Bad Name'"), "{err}");
+
+        let err = load("[transport.headers]\nCookie = \"a=b\\r\\nInjected: secret-value\"\n");
+        assert!(err.contains("'Cookie'"), "{err}");
+        assert!(!err.contains("secret-value"), "{err}");
+
+        let err = load("[transport.headers]\nCookie = \"a\"\ncookie = \"b\"\n");
+        assert!(err.contains("set twice"), "{err}");
+
+        // An env: reference isn't read at load, so a variable that isn't set
+        // yet doesn't stop the config from loading.
+        let ok = dir.join("ok.toml");
+        std::fs::write(
+            &ok,
+            "[transport.headers]\nCookie = \"env:DELVE_TEST_NOT_SET_YET\"\n",
+        )
+        .unwrap();
+        assert!(load_ok(&ok));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn load_ok(path: &Path) -> bool {
+        load(Some(path)).is_ok()
     }
 }
