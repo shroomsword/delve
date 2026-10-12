@@ -13,8 +13,8 @@
 //!   cycle, whether Cisco suggests it, and whether it is deferred.
 //!
 //! The shapes here come from captured responses (kept in `testdata/`): the
-//! top of the tree, the software types of a Catalyst (9300), and the releases
-//! of the Catalyst 9300 and of an SF220. The two differ in what they carry:
+//! top of the tree, the software types of the Catalyst 9300 and of an SF220,
+//! and the releases of both. The two products differ in what they carry:
 //! the 9300's versions have a train name (`Dublin-17.12.8`) and a life cycle,
 //! the SF220's are plain `1.2.1.5` with neither.
 //! Nothing here has been run against the live endpoints. They answered an
@@ -198,7 +198,8 @@ pub struct SoftwareType {
     pub name: String,
     /// The id the `releases` endpoint takes. Cisco sends it as a number.
     pub software_id: u64,
-    /// 1 or 2 in the sample; what the levels mean isn't in the response.
+    /// 0 on the SF220's types, 1 or 2 on the Catalyst 9300's; what the levels
+    /// mean isn't in the response.
     #[serde(default)]
     pub access_level: Option<u8>,
 }
@@ -863,6 +864,7 @@ mod tests {
     }
     const TYPES: &str = include_str!("../testdata/catalog-software-types-c9300.json");
     const SF220: &str = include_str!("../testdata/catalog-releases-sf220.json");
+    const SF220_TYPES: &str = include_str!("../testdata/catalog-software-types-sf220.json");
 
     #[test]
     fn the_software_types_url_takes_the_product_id() {
@@ -985,11 +987,10 @@ mod tests {
         }
     }
 
-    /// A tree with the two products of the samples below one category. The
-    /// Catalyst 9300's software types and releases are the captured
-    /// responses. The SF220 has its captured releases, but its node, ids and
-    /// software types were never captured: the id `5000`, the software id `1`
-    /// and the type name `Switch Firmware` are made up for this test.
+    /// A tree with the two products of the samples below one category. Both
+    /// products' software types and releases are captured responses. The
+    /// SF220's own node was never captured: its id `5000` is made up for this
+    /// test (and the 9300's node is only named after the id in its URLs).
     fn two_products() -> Catalog {
         Catalog {
             products: HashMap::from([
@@ -1004,15 +1005,11 @@ mod tests {
             ]),
             types: HashMap::from([
                 ("286315874", TYPES.to_string()),
-                (
-                    "5000",
-                    r#"{"softwareTypeList":[{"name":"Switch Firmware","softwareId":1}]}"#
-                        .to_string(),
-                ),
+                ("5000", SF220_TYPES.to_string()),
             ]),
             releases: HashMap::from([
                 (("286315874", "282046477"), C9300.to_string()),
-                (("5000", "1"), SF220.to_string()),
+                (("5000", "284971397"), SF220.to_string()),
             ]),
             requests: Default::default(),
         }
@@ -1055,13 +1052,39 @@ mod tests {
     #[tokio::test]
     async fn the_same_read_with_another_software_name_gets_the_other_product() {
         let catalog = two_products();
-        let reading = read_catalog(&catalog, "1", "Switch Firmware", WalkLimits::default())
-            .await
-            .unwrap();
+        let reading = read_catalog(
+            &catalog,
+            "1",
+            "Smart Plus Switch Firmware",
+            WalkLimits::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(reading.read.len(), 1);
         assert_eq!(reading.read[0].product.node.mdf_concept, "SF220-24");
+        assert_eq!(reading.read[0].software.software_id, 284971397);
         assert_eq!(reading.read[0].releases.len(), 16);
         assert_eq!(reading.without_software.len(), 1);
+        assert!(catalog
+            .requests
+            .lock()
+            .unwrap()
+            .contains(&"releases:5000:284971397".to_string()));
+    }
+
+    #[test]
+    fn the_sf220_has_a_firmware_type_and_a_mib_type_both_at_access_level_zero() {
+        let types = parse_software_types(SF220_TYPES).unwrap();
+        let names: Vec<_> = types.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Smart Plus Switch Firmware", "Smart Plus Switch MIB"]
+        );
+        assert!(types.iter().all(|t| t.access_level == Some(0)));
+        let firmware = find_software_type(&types, "smart plus switch firmware").unwrap();
+        assert_eq!(firmware.software_id, 284971397);
+        // A name is matched whole: "Switch Firmware" is not the SF220's type.
+        assert!(find_software_type(&types, "Switch Firmware").is_none());
     }
 
     #[tokio::test]
