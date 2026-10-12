@@ -988,9 +988,10 @@ mod tests {
     }
 
     /// A tree with the two products of the samples below one category. Both
-    /// products' software types and releases are captured responses. The
-    /// SF220's own node was never captured: its id `5000` is made up for this
-    /// test (and the 9300's node is only named after the id in its URLs).
+    /// products' ids, software types and releases are captured (the ids from
+    /// the request URLs). What was not captured is the products' names, which
+    /// are placeholders, and the tree above them: the root `1` and the
+    /// category `2` are made up.
     fn two_products() -> Catalog {
         Catalog {
             products: HashMap::from([
@@ -999,17 +1000,17 @@ mod tests {
                     "2",
                     level(&[
                         node("286315874", "Catalyst 9300 Switch", "2", true),
-                        node("5000", "SF220-24", "2", true),
+                        node("284973399", "SF220", "2", true),
                     ]),
                 ),
             ]),
             types: HashMap::from([
                 ("286315874", TYPES.to_string()),
-                ("5000", SF220_TYPES.to_string()),
+                ("284973399", SF220_TYPES.to_string()),
             ]),
             releases: HashMap::from([
                 (("286315874", "282046477"), C9300.to_string()),
-                (("5000", "284971397"), SF220.to_string()),
+                (("284973399", "284971397"), SF220.to_string()),
             ]),
             requests: Default::default(),
         }
@@ -1034,7 +1035,7 @@ mod tests {
             .iter()
             .map(|p| p.node.mdf_concept.as_str())
             .collect();
-        assert_eq!(without, ["SF220-24"]);
+        assert_eq!(without, ["SF220"]);
 
         // The ids in the releases request are the ones the types gave.
         assert_eq!(
@@ -1044,7 +1045,7 @@ mod tests {
                 "products:2",
                 "types:286315874",
                 "releases:286315874:282046477",
-                "types:5000",
+                "types:284973399",
             ]
         );
     }
@@ -1061,7 +1062,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(reading.read.len(), 1);
-        assert_eq!(reading.read[0].product.node.mdf_concept, "SF220-24");
+        assert_eq!(reading.read[0].product.node.mdf_concept, "SF220");
         assert_eq!(reading.read[0].software.software_id, 284971397);
         assert_eq!(reading.read[0].releases.len(), 16);
         assert_eq!(reading.without_software.len(), 1);
@@ -1069,7 +1070,7 @@ mod tests {
             .requests
             .lock()
             .unwrap()
-            .contains(&"releases:5000:284971397".to_string()));
+            .contains(&"releases:284973399:284971397".to_string()));
     }
 
     #[test]
