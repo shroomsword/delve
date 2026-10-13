@@ -23,12 +23,11 @@ Windows x86_64; on Intel macOS the tests are compiled but not run.
   tests and an end-to-end CLI run. It covers UniFi network-device
   firmware only — see [Vendor: UniFi](#vendor-unifi). It's the only vendor
   with `tos_reviewed: true`, so it's the only one `dig` currently runs.
-- **`vendor-cisco` is unverified.** Its `discover`/`metadata` are
-  implemented against Cisco's Software Suggestion API with real control
-  flow (OAuth2 auth, rate limiting, error handling), but the endpoints and
-  response shapes were written without network access and haven't been
-  checked against Cisco's live API. `fetch` (binary download) is not
-  implemented. Treat it as a first draft — see [Known gaps](#known-gaps).
+- **`vendor-cisco` fetches nothing yet.** `discover`, `metadata` and `fetch`
+  return `Unimplemented`. It has parsers for the JSON that
+  software.cisco.com's download pages read (the product tree, a product's
+  software types and its releases), checked against captured responses, but
+  nothing to fetch them with — see [Known gaps](#known-gaps).
 
 New here? Start with [Getting started](#getting-started).
 
@@ -282,7 +281,7 @@ delve-cli/              binary: config loading, plugin registry, commands
 delve-store-sqlite/     MetadataStore impl against SQLite (schema in migrations/)
 delve-plugin-testkit/   conformance checks and a mock HTTP server for vendor crates' tests
 delve-vendors/
-  vendor-cisco/          discover/metadata implemented but unverified — see below
+  vendor-cisco/          fetches nothing yet; parsers for software.cisco.com's catalog — see below
   vendor-unifi/          UniFi network-device firmware, verified against the live API
 delve-subscribers/
   subscriber-webhook/     POSTs a dig's events to a configured URL, feature-gated
@@ -423,9 +422,8 @@ fixtures, points the plugin at it, and creates a context with
 
 `vendor-unifi`'s tests are the reference: they serve its fixtures from a
 `MockServer` and run all four checks. `vendor-cisco` doesn't use the
-testkit yet, because its `discover`/`metadata` still need the live
-verification described under [Known gaps](#known-gaps), and its OAuth flow
-needs a mock token endpoint first.
+testkit yet, because its `discover` returns `Unimplemented`; see
+[Known gaps](#known-gaps).
 
 ## Data model and identity keys
 
@@ -761,10 +759,8 @@ pub enum CircuitIsolation {
 ## Credentials
 
 `[vendors.credentials.<vendor_id>]` holds arbitrary key/value pairs — each
-plugin documents which keys it needs (`vendor-cisco` expects
-`client_id`/`client_secret` — an OAuth2 `client_credentials` pair from a
-Cisco API Console application, which is how Cisco's actual Support APIs
-authenticate; not a username/password). Deliberately untyped: different
+plugin documents which keys it needs (none of the current plugins take
+any). Deliberately untyped: different
 vendors need different shapes (a client id/secret pair, a single API
 token, a client cert path), and the framework has no way to know which in
 advance.
@@ -774,9 +770,9 @@ environment at load time, so a config file can be committed or shared
 without embedding secrets in it directly:
 
 ```toml
-[vendors.credentials.cisco]
+[vendors.credentials.acme]
 client_id = "your-api-console-client-id"
-client_secret = "env:CISCO_CLIENT_SECRET"   # read from $CISCO_CLIENT_SECRET at load time
+client_secret = "env:ACME_CLIENT_SECRET"    # read from $ACME_CLIENT_SECRET at load time
 ```
 
 A referenced env var that isn't set is a hard config-load error, not a
@@ -819,9 +815,8 @@ intercept every HTTP call a plugin makes — plugins hold the raw
 `discover`/`metadata`/`fetch` logic needs to. So it's on each plugin
 author to call `ctx.throttle().await` immediately before every outgoing
 request, the same way `require_credential` is opt-in rather than
-intercepted. `vendor-cisco`'s stub demonstrates the pattern in all three
-trait methods — skipping the call means skipping the rate limit entirely
-for that request.
+intercepted. `vendor-unifi` demonstrates the pattern — skipping the call
+means skipping the rate limit entirely for that request.
 
 The limiter is shared per vendor (one `ScrapeContext` per vendor per dig),
 so concurrent requests fired by a plugin's own `discover()` — e.g.
@@ -1244,8 +1239,8 @@ flags as `unearth` (`--vendor`, `--device-family`, `--hardware`,
 what's fetched.
 
 ```
-delve catalog --vendor cisco
-delve catalog --vendor cisco --device-family isr4000 --long
+delve catalog --vendor unifi
+delve catalog --vendor unifi --device-family UAP --long
 ```
 
 Default output is a concise table of the most useful fields; `--long`/`-l`
@@ -1259,7 +1254,7 @@ re-observed across digs, not just its current state. Requires enough
 specificity to resolve to exactly one entry (or `--id`).
 
 ```
-delve provenance --vendor cisco --device-family isr4000 --version 17.9.4a
+delve provenance --vendor unifi --device-family UAP --hardware U7PG2 --version v6.8.2+15592
 delve provenance --id <uuid>
 ```
 
@@ -1283,7 +1278,7 @@ The only command that touches binary bytes. Direct pass-through to the
 owning plugin's `fetch()` — no engine, `EventBus`, or diff logic involved.
 
 ```
-delve unearth --vendor cisco --device-family isr4000 --version 17.9.4a --out ./downloads/
+delve unearth --vendor unifi --device-family UAP --hardware U7PG2 --version v6.8.2+15592 --out ./downloads/
 delve unearth --id <uuid> --out ./downloads/
 ```
 
@@ -1363,11 +1358,11 @@ through the real subscribers, if you ask.
 database_path = "/custom/path/delve.sqlite"   # default: ~/.local/share/delve/delve.sqlite ($XDG_DATA_HOME) — parent dirs are created automatically
 
 [vendors]
-enabled = ["cisco"]                             # narrows compiled-in vendors; empty = all
+enabled = ["unifi"]                             # narrows compiled-in vendors; empty = all
 
-[vendors.credentials.cisco]
+[vendors.credentials.acme]                      # a vendor that needs a login or an API key
 client_id = "your-api-console-client-id"
-client_secret = "env:CISCO_CLIENT_SECRET"
+client_secret = "env:ACME_CLIENT_SECRET"
 
 [vendors.settings.unifi]                        # non-secret, per-plugin settings
 models = ["U7PG2", "USMINI"]                    # see "Tracking only some models"
@@ -1437,8 +1432,8 @@ To exercise `discover`/`metadata` against a real site while the flag is
 
 `vendor-unifi` (vendor id `unifi`) tracks Ubiquiti UniFi firmware from
 `https://fw-update.ui.com/api/firmware` — the API UniFi devices and
-controllers themselves poll for updates. It needs no credentials. Unlike
-`vendor-cisco`, every endpoint and field it uses was checked against live
+controllers themselves poll for updates. It needs no credentials. Every
+endpoint and field it uses was checked against live
 responses (September 2026), and its test fixtures are real records from
 those responses. The API is **undocumented**, though, so Ubiquiti can
 change it without notice; `vendor-unifi/src/api.rs`'s module doc comment
@@ -1737,43 +1732,30 @@ than a generic "history" would have been.
 
 ## Known gaps
 
-1. **`vendor-cisco`'s API integration is unverified.** `discover`/
-   `metadata` are implemented against Cisco's Software Suggestion API —
-   real OAuth2 `client_credentials` auth, real rate limiting and error
-   handling, real (tested) IOS-XE version parsing — but the actual
-   endpoint URLs and JSON response field names in `api.rs`/`auth.rs` were
-   written with no network access to check them against Cisco's live API,
-   and are marked `// VERIFY:` throughout both files. Specifically still
+1. **`vendor-cisco` fetches nothing.** `discover`, `metadata` and `fetch`
+   return `Unimplemented`. The plugin once read Cisco's official Software
+   Suggestion API, never verified against the live API; that was removed.
+   `vendor_cisco::catalog` parses the JSON software.cisco.com's download
+   pages read (the product tree, a product's software types, and its
+   releases), walks a subtree of the tree, and maps releases to delve's
+   model, tested on captured responses of a Catalyst 9300 and an SF220. Still
    open:
-   - The OAuth2 token endpoint (`auth.rs::TOKEN_URL`) and token response
-     field names.
-   - The suggestion list/detail endpoint paths (`api.rs::suggestions_list_url`,
-     `suggestion_detail_url`) and whether the per-ID detail endpoint
-     exists at all — `metadata()` currently assumes it does, to avoid
-     re-fetching an entire device family's release list for every single
-     version.
-   - The actual checksum type Cisco's API returns, if any — `sha256` is
-     left `None` throughout rather than populated from an unconfirmed
-     field, since Cisco's download pages have historically shown MD5/SHA512,
-     not SHA256, and a wrong-but-present hash would silently break
-     `unearth`'s default verification.
-   - `fetch()` isn't implemented at all — getting an actual downloadable
-     binary URL out of Cisco likely needs a separate API call beyond the
-     Suggestion API, and guessing at that flow blind risks silently
-     downloading the wrong file, which is worse than a clear
-     `Unimplemented` error.
-
-   None of this blocks iterating on the plugin's structure, error
-   handling, or the rest of the framework — but don't point it at a real
-   Cisco account and expect it to work without checking each `// VERIFY:`
-   marker first.
+   - How a request is authorized: those endpoints answer a client with no
+     session with 401.
+   - Whether delve may use them at all (they are undocumented), which is the
+     ToS review below.
+   - A per-dig cache, so `metadata()` doesn't request a product's whole
+     release list once per release.
+   - Checksums, release dates, download links and release notes: the
+     `releases` document has none of them, so the stored metadata has no
+     `sha256` or `release_date`, and `fetch` has nothing to download.
 
 2. **`vendor-cisco` doesn't have `tos_reviewed: true`.** See
    [Compliance](#compliance-tos-and-robotstxt) (`vendor-unifi`'s review is
    recorded in [Vendor: UniFi](#vendor-unifi)). Don't flip
    `vendor-cisco`'s flag without actually reading Cisco's robots.txt and
-   ToS first. To exercise `discover`/`metadata` against a real site while
-   the flag is `false`, use `dig --vendor cisco --allow-unreviewed`.
+   ToS first. `dig --vendor cisco --allow-unreviewed` skips the flag, and
+   then fails with `Unimplemented`, since the plugin fetches nothing.
 
 ## Test coverage
 
@@ -1841,20 +1823,17 @@ exists because of it, not as a design decision made up front.
   SHA-256("abc") and SHA-256("") test vectors, and hashes multiple written
   chunks as one contiguous stream (matching a one-shot hash of the same
   concatenated bytes) rather than just the last chunk written.
-- **`delve-vendors/vendor-cisco`**: everything that's testable without a
-  live Cisco endpoint. `version.rs` — IOS-XE dotted-version parsing
-  (numeric-vs-lexicographic ordering, rebuild-letter ordering, malformed
-  input, and confirming classic IOS train notation deliberately fails to
-  parse rather than producing a fabricated ordering). `auth.rs`'s
-  `TokenCache` — cache hit/miss, the early-renewal safety margin actually
-  taking effect before the token's literal expiry, and a
-  shorter-than-safety-margin TTL saturating instead of panicking (split
-  out as pure functions from the actual HTTP call specifically so this is
-  testable without a network dependency). `api.rs` — the list/detail JSON
-  parsing and mapping logic against hand-written fixtures matching the
-  module's *assumed* schema: a passing test here proves the code is
-  internally consistent, not that it matches Cisco's real API (see the
-  module's doc comment and the "Known gaps" entry on this).
+- **`delve-vendors/vendor-cisco`**: `version.rs` — IOS-XE dotted-version
+  parsing (numeric-vs-lexicographic ordering, rebuild-letter ordering,
+  malformed input, and confirming classic IOS train notation deliberately
+  fails to parse rather than producing a fabricated ordering). `catalog.rs` —
+  the product tree, software types and releases documents, parsed from
+  captured responses (the top of the tree, a subtree of small-business
+  switches with its models inline, and the software types and releases of a
+  Catalyst 9300 and an SF220): merging the lists a release appears in,
+  ordering versions with and without a train name, the bounded subtree walk,
+  and `read_catalog` over a fake source. Nothing has been run against the
+  live endpoints.
 - **`delve-plugin-testkit`**: the checks themselves, run against a toy
   plugin that is made to break each rule in turn — wrong vendor id, no
   refs, an `Opaque` version with an ordinal, a blank hardware target, a
@@ -1946,11 +1925,9 @@ exists because of it, not as a design decision made up front.
   id failing), and ambiguous or unmatched selectors failing.
 
 Not yet covered: `unearth.rs` beyond `FileSink` (resolution, context
-building), which is mostly wiring. `vendor-cisco`'s actual HTTP
-integration (the `discover`/`metadata` methods themselves, end to end)
-isn't tested at all — only the pieces factored out to be testable without
-a live Cisco endpoint are; the untested glue between them is exactly the
-part most likely to need fixing once the `// VERIFY:` markers are checked.
+building), which is mostly wiring. `vendor-cisco` has no HTTP code to test:
+its `catalog` module is tested on captured responses, and fetching them is
+not written yet.
 
 ## Not yet scaffolded
 
