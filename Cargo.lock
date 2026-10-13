@@ -2657,12 +2657,9 @@ dependencies = [
  "chrono",
  "delve-core",
  "inventory",
- "reqwest",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
  "tokio",
- "tracing",
  "url",
 ]
 
